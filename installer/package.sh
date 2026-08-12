@@ -16,13 +16,35 @@ trap 'rm -rf "$stage"' EXIT
 mkdir "$stage/openlitespeed_reload"
 cp -a "$PLUGIN_SRC/." "$stage/openlitespeed_reload/"
 find "$stage/openlitespeed_reload/config" -type f ! -name allowed_resellers.example -delete
-chmod 755 "$stage/openlitespeed_reload/reseller/index.html" \
-    "$stage/openlitespeed_reload/reseller/menu.json.raw" \
-    "$stage/openlitespeed_reload/admin/index.html" \
-    "$stage/openlitespeed_reload/scripts/install.sh" \
-    "$stage/openlitespeed_reload/scripts/uninstall.sh"
 
 mkdir -p "$DIST_DIR"
-archive="$DIST_DIR/openlitespeed_reload-$version.tar.gz"
-tar -czf "$archive" -C "$stage" openlitespeed_reload
-echo "OK: built $archive"
+plain_tar="$DIST_DIR/openlitespeed_reload-$version.tar"
+tarball="$plain_tar.gz"
+rm -f "$plain_tar" "$tarball"
+tar --owner=0 --group=0 --numeric-owner --mode='u=rwX,go=rX' \
+    -cf "$plain_tar" -C "$stage" \
+    openlitespeed_reload/plugin.conf \
+    openlitespeed_reload/lib \
+    openlitespeed_reload/images \
+    openlitespeed_reload/config
+tar --owner=0 --group=0 --numeric-owner --mode='u=rwx,go=rx' \
+    -rf "$plain_tar" -C "$stage" \
+    openlitespeed_reload/reseller \
+    openlitespeed_reload/admin \
+    openlitespeed_reload/scripts
+gzip -fn "$plain_tar"
+echo "OK: built $tarball"
+echo "    Upload this file in DirectAdmin: Admin > Plugin Manager > Add Plugin"
+
+zipfile="$DIST_DIR/openlitespeed_reload-$version.zip"
+if command -v zip >/dev/null 2>&1; then
+    rm -f "$zipfile"
+    (cd "$stage" && zip -qr "$zipfile" openlitespeed_reload)
+    echo "OK: built $zipfile (archive copy; DirectAdmin Plugin Manager requires the .tar.gz)"
+elif python3 -c 'import shutil' >/dev/null 2>&1; then
+    rm -f "$zipfile"
+    (cd "$stage" && ZIP_BASE="${zipfile%.zip}" python3 -c 'import os, shutil; shutil.make_archive(os.environ["ZIP_BASE"], "zip", ".", "openlitespeed_reload")')
+    echo "OK: built $zipfile (archive copy; DirectAdmin Plugin Manager requires the .tar.gz)"
+else
+    echo "NOTE: zip and python3 not found, skipped optional .zip archive"
+fi

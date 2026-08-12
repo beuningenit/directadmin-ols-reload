@@ -110,6 +110,7 @@ curl -sk "https://SERVER:2222$PAGE" -H "Cookie: session=..." -X POST --data "act
 | # | Test | Steps | Expected |
 |---|------|-------|----------|
 | S1 | Installer copies as root | Clone the repo into a non-root-owned directory (e.g. `/tmp/x` as a normal user), then run `installer/install.sh` as root | Every file under the plugin dir is `root:root` before `scripts/install.sh` runs; `ls -lR` shows nothing owned by another uid and nothing group/world writable |
+| S1b | Symlinked source refused | In a non-root-owned clone, replace `plugin/scripts/install.sh` with a symlink to another file, then run `installer/install.sh` as root | Installer aborts before copying with the symbolic-links error; nothing is executed and the plugin dir is unchanged |
 | S2 | Tampered `user.conf` denies | As root, `chmod 666` a reseller's `user.conf`, then load the plugin page as that reseller | Access denied (untrusted metadata); restore `chmod 600` and confirm access returns |
 | S3 | Log cap holds | Append filler until the audit log exceeds 32 MB, then trigger any audited action | New entries go to syslog (`journalctl -t openlitespeed_reload`); the file stops growing |
 | S4 | Log rotates on size | `logrotate -d /etc/logrotate.d/directadmin-openlitespeed-reload` | Config parses; `maxsize 16M` and `create 0600 root root` present |

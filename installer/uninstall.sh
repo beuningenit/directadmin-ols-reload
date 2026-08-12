@@ -12,7 +12,7 @@ if [ ! -d "$TARGET" ]; then
     exit 0
 fi
 
-if [ -f "$TARGET/scripts/uninstall.sh" ]; then
+if [ -f "$TARGET/scripts/uninstall.sh" ] && [ ! -L "$TARGET/scripts/uninstall.sh" ]; then
     owner=$(stat -c %u "$TARGET/scripts/uninstall.sh" 2>/dev/null || echo unknown)
     if [ "$owner" = "0" ]; then
         sh "$TARGET/scripts/uninstall.sh"

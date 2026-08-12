@@ -80,6 +80,31 @@ curl -sk "https://SERVER:2222$PAGE" -H "Cookie: session=..." -X POST --data "act
 | I6 | Package layout valid | `sh installer/package.sh`; `tar -tzf dist/openlitespeed_reload.tar.gz` | `plugin.conf` listed at archive root with no wrapping directory; script's own layout assertions pass |
 | I7 | Plugin Manager upload | Upload `dist/openlitespeed_reload.tar.gz` in **Admin » Plugin Manager » Add Plugin** | Plugin installs without "The following file is missing: plugin.conf"; appears in the plugin list; admin and reseller pages load |
 
+## Allowlist management (admin GUI)
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| M1 | Add via GUI | As `admin` on ADMIN_PAGE, pick `resno` in the dropdown, click **Add reseller** | Success notice; `resno` appears in the list; LOG gains `event=allowlist_add ... result=success detail="target=resno"`; `resno` can now reload |
+| M2 | Remove via GUI | Click **Remove** next to `resno` | Success notice; entry disappears; LOG gains `event=allowlist_remove ... result=success`; `resno` is denied again |
+| M3 | Reseller cannot manage | As `resok`, POST `action=add_reseller&username=resno` with a valid token to PAGE | Denied with "Only administrators can change the reseller allowlist."; LOG `result=denied_not_admin`; allowlist unchanged |
+| M4 | Cannot add a non-reseller | As `admin`, POST `action=add_reseller&username=user1` (and a non-existent name) to ADMIN_PAGE | Rejected as "not an active reseller account"; LOG `result=denied_not_a_reseller`; allowlist unchanged |
+| M5 | Malformed username rejected | POST `username=../../etc/passwd`, `username=RES OK`, `username=a;b` | "That username is not valid."; LOG `result=denied_invalid_username`; no file written |
+| M6 | Token required | POST a valid add/remove without or with a wrong `csrf_token` | `result=denied_invalid_token`; allowlist unchanged |
+| M7 | GET cannot modify | GET ADMIN_PAGE with `?action=add_reseller&username=resno` | Ignored; allowlist unchanged |
+| M8 | Comments preserved | Add `# managed by ops` to the allowlist, then add and remove a reseller via GUI | Comment line still present afterwards |
+| M9 | Unsafe permissions fail closed | `chmod 666` the allowlist, try to add via GUI | Edit refused with an error notice; restore `chmod 600` |
+| M10 | Duplicate add is safe | Add `resok` twice | Second add succeeds without duplicating the entry |
+| M11 | Concurrent edits serialize | Fire a simultaneous add of `resA` and remove of `resB` (`curl ... & curl ... &`) | Both changes survive; neither request resurrects or drops the other's entry |
+| M12 | Short write does not clobber | Simulate a full filesystem for `config/` (e.g. a small tmpfs mount) and attempt an add | Error notice; original allowlist intact and unchanged; no `.tmp` file left behind |
+
+## Branding
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| B1 | Logo renders | Open PAGE as `resok` | Beuningen IT logo visible in the header, dark text legible on white, not a broken image |
+| B2 | Brand colour | Inspect the reload button | Background `#FFA900` with dark text; focus ring on inputs uses the same colour |
+| B3 | Static asset served | Request `/CMD_PLUGINS_RESELLER/openlitespeed_reload/images/logo-beuningenit.svg` | SVG served as-is, not executed |
+
 ## Audit verification
 
 After the full run, `cat $LOG` and verify each line has `timestamp user= master= ip= event= authorized= attempted= result=`, that denied attempts from `resno` are present, and that every executed reload produced a `result=started` line immediately followed by a `result=success` line with `detail="exit=0 post_state=active"` (or `result=failed` with sanitized detail).

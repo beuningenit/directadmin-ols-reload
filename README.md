@@ -90,6 +90,14 @@ Uninstalling through **Admin » Plugin Manager** works too; DirectAdmin runs `sc
 
 ## Adding a reseller to the allowlist
 
+### From the DirectAdmin GUI (admin only)
+
+Open **Admin » Reload OpenLiteSpeed**. The **Authorized resellers** section lists everyone currently allowed, with a **Remove** button per entry, and a dropdown of the server's remaining reseller accounts with an **Add reseller** button. Changes are written to the allowlist immediately and audited.
+
+Only admin accounts can reach this section, and the dropdown is populated from actual reseller accounts on the server; the backend independently re-verifies that a submitted username is an active reseller before adding it, so a forged POST cannot authorize an arbitrary or non-existent name.
+
+### From the command line
+
 As root, add the DirectAdmin reseller username on its own line:
 
 ```sh
@@ -108,17 +116,21 @@ Changes take effect on the next request; no restart is needed.
 
 ## Removing a reseller from the allowlist
 
-Edit the file as root and delete the line:
+Use the **Remove** button in **Admin » Reload OpenLiteSpeed**, or edit the file as root and delete the line:
 
 ```sh
 vi /usr/local/directadmin/plugins/openlitespeed_reload/config/allowed_resellers
 ```
 
+Both routes take effect on the next request. Comment lines in the file are preserved when the GUI edits it.
+
 ## Usage
 
 An allowlisted reseller logs into DirectAdmin Evolution and opens **Reload OpenLiteSpeed** from the menu (or `/CMD_PLUGINS_RESELLER/openlitespeed_reload/index.html`). The page shows the current service status (Running / Stopped / Not installed / Unknown) and a **Reload OpenLiteSpeed** button. Submitting it shows an explicit confirmation step warning that the operation affects all websites on the server. After confirmation the server performs one `systemctl restart lsws`, verifies the service is active again, and reports success or a sanitized failure message.
 
-Admins have an equivalent page at **Admin » Reload OpenLiteSpeed** (`/CMD_PLUGINS_ADMIN/openlitespeed_reload/index.html`) that also shows the current allowlist and the most recent audit entries.
+Admins have an equivalent page at **Admin » Reload OpenLiteSpeed** (`/CMD_PLUGINS_ADMIN/openlitespeed_reload/index.html`) that additionally manages the reseller allowlist (add/remove) and shows the most recent audit entries.
+
+Both pages carry Beuningen IT branding: the company logo in the header and `#FFA900` as the accent colour for primary actions and focus states. The logo ships with the plugin at `images/logo-beuningenit.svg` and is served as a static asset, with its light `#f5f5f5` fill converted to `#000000` for legibility on the white panel background.
 
 ## Login-as behavior
 
@@ -135,12 +147,13 @@ Identities of the form `master|user` in DirectAdmin's `USERNAME` value are parse
 - **Single fixed operation.** The only privileged commands the plugin can run are `systemctl restart lsws.service`, `systemctl is-active lsws.service`, and `systemctl show lsws.service --property=LoadState --value`, always with a fixed argument array, an absolute `systemctl` path, a minimal environment, and no shell. No request value is ever part of a command.
 - **Root execution via DirectAdmin.** Privileged execution uses `reseller_run_as=root` / `admin_run_as=root` (DirectAdmin 1.689+). There is no setuid helper, no sudoers entry, and no generic privileged helper. If the script is not running as root (older DirectAdmin), it renders an incompatibility notice and never attempts privileged work.
 - **Server-side authorization on every request.** Before any action: the effective account must exist, not be suspended, and have `usertype=reseller` (allowlisted) or `usertype=admin`; hiding the menu is cosmetic only. Forged URLs or POSTs from other accounts are denied and logged.
-- **Allowlist integrity.** The allowlist is only trusted when owned by root and not group/world writable; otherwise it is treated as empty (fail closed).
+- **Allowlist integrity.** The allowlist is only trusted when owned by root and not group/world writable; otherwise it is treated as empty (fail closed). The same check guards writes, so the GUI refuses to edit a file with unsafe ownership or permissions. Each edit takes an exclusive lock for the whole read-modify-write sequence, so two admins acting at once cannot overwrite each other's change. The new contents are written to a 0600 temporary file in the root-only `config/` directory, verified to be complete and flushed, then moved into place with `rename()`, so a concurrent read never sees a partial allowlist and a short write never replaces a good file.
+- **Allowlist editing is admin-only.** Add and remove actions require `usertype=admin` on the effective account, a valid POST token, a username matching the strict pattern, and — for additions — an existing, unsuspended account whose `usertype` is `reseller`. Resellers never see or reach these actions, and the reseller page exposes no allowlist controls at all.
 - **POST-only with confirmation.** GET never triggers a reload; the action is only read from the POST body, must exactly equal `reload`, and requires `confirm=yes` from the server-rendered confirmation step.
 - **CSRF.** DirectAdmin's own session and referer checking protect plugin requests; in addition every state-changing POST must carry an HMAC token bound to the DirectAdmin session ID and effective username, derived from a root-only secret generated at install time. Tokens are compared with constant-time comparison. The session ID itself is never logged or echoed.
 - **Concurrency and rate limiting.** An exclusive `flock` on `/run/directadmin-openlitespeed-reload/reload.lock` guarantees at most one restart at a time, and a 10-second server-side cooldown absorbs repeated clicks and browser retries. The lock lives in a root-owned 0700 directory under `/run` (not the world-writable `/run/lock`) and the plugin verifies ownership and refuses symlinks before using it. The UI also disables the button after submission, but only the server-side lock is relied upon.
 - **Sanitized output.** Resellers only ever see fixed status strings and fixed result messages. Command stderr, exit codes, environment values, and file contents never reach the reseller UI; failure detail goes to the root-only audit log (control characters stripped, truncated).
-- **Audit logging.** Every privileged attempt (allowed or denied) is appended to `/var/log/directadmin-openlitespeed-reload.log` (0600 root) with timestamp, effective user, login-as master, request IP when DirectAdmin provides one, authorization outcome, whether a reload was attempted, and the result. No passwords, session IDs, cookies, or secrets are logged. If the log file cannot be written, entries fall back to syslog.
+- **Audit logging.** Every privileged attempt (allowed or denied), including every allowlist addition and removal with its target username, is appended to `/var/log/directadmin-openlitespeed-reload.log` (0600 root) with timestamp, effective user, login-as master, request IP when DirectAdmin provides one, authorization outcome, whether a reload was attempted, and the result. No passwords, session IDs, cookies, or secrets are logged. If the log file cannot be written, entries fall back to syslog.
 
 ## Testing
 

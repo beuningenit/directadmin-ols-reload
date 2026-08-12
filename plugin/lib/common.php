@@ -14,6 +14,7 @@ const OLS_USERNAME_PATTERN = '/^[a-z][a-z0-9_]{0,31}$/';
 const OLS_DA_USERS_DIR = '/usr/local/directadmin/data/users';
 const OLS_RESELLER_URL = '/CMD_PLUGINS_RESELLER/openlitespeed_reload/index.html';
 const OLS_ADMIN_URL = '/CMD_PLUGINS_ADMIN/openlitespeed_reload/index.html';
+const OLS_BRAND_COLOR = '#FFA900';
 
 function ols_running_as_root(): bool
 {
@@ -37,7 +38,7 @@ function ols_decode_request(?string $raw): array
     $params = [];
     foreach ($pairs as $key => $value) {
         if (is_string($value)) {
-            $params[urldecode((string)$key)] = urldecode($value);
+            $params[(string)$key] = $value;
         }
     }
     return $params;
@@ -128,6 +129,26 @@ function ols_account_usertype(string $username): string
     return $usertype;
 }
 
+function ols_known_resellers(): array
+{
+    $names = [];
+    $handle = @opendir(OLS_DA_USERS_DIR);
+    if ($handle === false) {
+        return $names;
+    }
+    while (($entry = readdir($handle)) !== false) {
+        if (!preg_match(OLS_USERNAME_PATTERN, $entry)) {
+            continue;
+        }
+        if (ols_account_usertype($entry) === 'reseller') {
+            $names[] = $entry;
+        }
+    }
+    closedir($handle);
+    sort($names);
+    return $names;
+}
+
 function ols_file_is_root_protected(string $path): bool
 {
     clearstatcache(true, $path);
@@ -141,17 +162,19 @@ function ols_file_is_root_protected(string $path): bool
     return ($info['mode'] & 0022) === 0;
 }
 
-function ols_allowlist_entries(): array
+function ols_allowlist_lines(): array
 {
     if (!ols_file_is_root_protected(OLS_ALLOWLIST_FILE)) {
         return [];
     }
-    $lines = @file(OLS_ALLOWLIST_FILE, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-    if ($lines === false) {
-        return [];
-    }
+    $lines = @file(OLS_ALLOWLIST_FILE, FILE_IGNORE_NEW_LINES);
+    return $lines === false ? [] : $lines;
+}
+
+function ols_allowlist_entries(): array
+{
     $entries = [];
-    foreach ($lines as $line) {
+    foreach (ols_allowlist_lines() as $line) {
         $entry = strtolower(trim($line));
         if ($entry === '' || $entry[0] === '#') {
             continue;
@@ -161,7 +184,99 @@ function ols_allowlist_entries(): array
         }
         $entries[$entry] = true;
     }
-    return array_keys($entries);
+    $result = array_keys($entries);
+    sort($result);
+    return $result;
+}
+
+function ols_allowlist_lock()
+{
+    if (!ols_lock_dir_ready()) {
+        return null;
+    }
+    $path = OLS_LOCK_DIR . '/allowlist.lock';
+    if (is_link($path)) {
+        return null;
+    }
+    $handle = @fopen($path, 'c');
+    if ($handle === false) {
+        return null;
+    }
+    @chmod($path, 0600);
+    if (!flock($handle, LOCK_EX)) {
+        fclose($handle);
+        return null;
+    }
+    return $handle;
+}
+
+function ols_allowlist_write(array $lines): bool
+{
+    if (!ols_file_is_root_protected(OLS_ALLOWLIST_FILE)) {
+        return false;
+    }
+    $temp = OLS_ALLOWLIST_FILE . '.tmp';
+    if (is_link($temp)) {
+        return false;
+    }
+    $body = $lines === [] ? '' : implode("\n", $lines) . "\n";
+    $handle = @fopen($temp, 'w');
+    if ($handle === false) {
+        return false;
+    }
+    @chmod($temp, 0600);
+    $written = fwrite($handle, $body);
+    $flushed = fflush($handle);
+    fclose($handle);
+    if ($written !== strlen($body) || $flushed === false) {
+        @unlink($temp);
+        return false;
+    }
+    if (!@rename($temp, OLS_ALLOWLIST_FILE)) {
+        @unlink($temp);
+        return false;
+    }
+    @chmod(OLS_ALLOWLIST_FILE, 0600);
+    return true;
+}
+
+function ols_allowlist_update(string $username, bool $shouldBePresent): bool
+{
+    if (!preg_match(OLS_USERNAME_PATTERN, $username)) {
+        return false;
+    }
+    $lock = ols_allowlist_lock();
+    if ($lock === null) {
+        return false;
+    }
+    $kept = [];
+    $present = false;
+    foreach (ols_allowlist_lines() as $line) {
+        if (strtolower(trim($line)) === $username) {
+            $present = true;
+            if (!$shouldBePresent) {
+                continue;
+            }
+        }
+        $kept[] = $line;
+    }
+    if ($shouldBePresent && !$present) {
+        $kept[] = $username;
+    }
+    $result = ols_allowlist_write($kept);
+    flock($lock, LOCK_UN);
+    fclose($lock);
+    return $result;
+}
+
+function ols_allowlist_add(string $username): bool
+{
+    return ols_allowlist_update($username, true);
+}
+
+function ols_allowlist_remove(string $username): bool
+{
+    return ols_allowlist_update($username, false);
 }
 
 function ols_reseller_authorized(array $identity): bool
@@ -467,39 +582,82 @@ function ols_h(string $value): string
     return htmlspecialchars($value, ENT_QUOTES, 'UTF-8');
 }
 
-function ols_page_open(): string
+function ols_asset_url(string $pageUrl, string $file): string
+{
+    return rtrim(str_replace('index.html', '', $pageUrl), '/') . '/images/' . $file;
+}
+
+function ols_styles(): string
 {
     return '<style>'
-        . '.ols-wrap{max-width:640px;margin:16px auto;padding:24px;background:#fff;border:1px solid #e0e4e8;border-radius:8px;font-family:inherit;color:#2c3345}'
-        . '.ols-title{margin:0 0 16px;font-size:20px;font-weight:600}'
-        . '.ols-status{margin:0 0 20px;font-size:15px}'
-        . '.ols-badge{display:inline-block;padding:2px 10px;border-radius:12px;font-size:13px;font-weight:600}'
-        . '.ols-state-running{background:#e6f6ec;color:#1e7c45}'
-        . '.ols-state-stopped{background:#fdecea;color:#b3261e}'
-        . '.ols-state-unavailable{background:#f1f2f4;color:#5f6673}'
-        . '.ols-state-unknown{background:#fff4e5;color:#9a6700}'
-        . '.ols-notice{margin:0 0 16px;padding:12px 16px;border-radius:6px;font-size:14px;line-height:1.5}'
-        . '.ols-notice-info{background:#eef4fd;color:#1a4f9c}'
-        . '.ols-notice-success{background:#e6f6ec;color:#1e7c45}'
-        . '.ols-notice-error{background:#fdecea;color:#b3261e}'
-        . '.ols-notice-warning{background:#fff4e5;color:#9a6700}'
-        . '.ols-button{display:inline-block;padding:9px 18px;border:0;border-radius:6px;background:#2f6fed;color:#fff;font-size:14px;font-weight:600;cursor:pointer}'
-        . '.ols-button:hover{background:#2456bd}'
-        . '.ols-button-danger{background:#b3261e}'
-        . '.ols-button-danger:hover{background:#8c1d17}'
-        . '.ols-cancel{margin-left:12px;font-size:14px}'
-        . '.ols-muted{color:#5f6673;font-size:13px}'
-        . '.ols-section{margin-top:28px;padding-top:16px;border-top:1px solid #e0e4e8}'
-        . '.ols-section h3{margin:0 0 10px;font-size:15px;font-weight:600}'
-        . '.ols-log{margin:0;padding:12px;background:#f6f7f9;border-radius:6px;font-size:12px;line-height:1.6;overflow-x:auto;white-space:pre}'
-        . '.ols-list{margin:0;padding-left:20px;font-size:14px}'
-        . '</style>'
-        . '<div class="ols-wrap"><h2 class="ols-title">OpenLiteSpeed</h2>';
+        . '.ols-wrap{--ols-brand:' . OLS_BRAND_COLOR . ';--ols-ink:#101114;--ols-muted:#5f6673;--ols-line:#e4e7ec;'
+        . 'max-width:680px;margin:16px auto;background:#fff;border:1px solid var(--ols-line);border-radius:10px;'
+        . 'box-shadow:0 1px 2px rgba(16,17,20,.05);color:var(--ols-ink);font-size:14px;line-height:1.55;overflow:hidden}'
+        . '.ols-head{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:20px 28px;border-bottom:1px solid var(--ols-line)}'
+        . '.ols-head img{height:30px;width:auto;max-width:210px}'
+        . '.ols-head-rule{width:1px;align-self:stretch;background:var(--ols-line)}'
+        . '.ols-head h2{margin:0;font-size:17px;font-weight:600;letter-spacing:-.01em}'
+        . '.ols-body{padding:24px 28px}'
+        . '.ols-status{display:flex;align-items:center;gap:10px;margin:0 0 20px;font-weight:500}'
+        . '.ols-badge{display:inline-flex;align-items:center;gap:7px;padding:4px 12px;border-radius:999px;font-size:13px;font-weight:600}'
+        . '.ols-dot{width:8px;height:8px;border-radius:50%;background:currentColor}'
+        . '.ols-state-running{background:#e7f6ec;color:#12703a}'
+        . '.ols-state-stopped{background:#fdeceb;color:#a91b12}'
+        . '.ols-state-unavailable{background:#f2f3f5;color:#5f6673}'
+        . '.ols-state-unknown{background:#fff5e3;color:#8a5a00}'
+        . '.ols-notice{margin:0 0 18px;padding:13px 16px;border-radius:8px;border-left:3px solid transparent}'
+        . '.ols-notice-info{background:#f2f3f5;border-color:#8a909c}'
+        . '.ols-notice-success{background:#e7f6ec;border-color:#12703a;color:#0e5c2f}'
+        . '.ols-notice-error{background:#fdeceb;border-color:#a91b12;color:#8f170f}'
+        . '.ols-notice-warning{background:#fff5e3;border-color:var(--ols-brand);color:#7a4f00}'
+        . '.ols-button{display:inline-block;padding:10px 20px;border:0;border-radius:7px;background:var(--ols-brand);'
+        . 'color:var(--ols-ink);font:inherit;font-weight:600;cursor:pointer;transition:filter .12s ease}'
+        . '.ols-button:hover{filter:brightness(.93)}'
+        . '.ols-button:disabled{opacity:.6;cursor:default}'
+        . '.ols-button-quiet{background:#f2f3f5;color:var(--ols-ink);padding:7px 14px;font-size:13px;font-weight:500}'
+        . '.ols-button-quiet:hover{background:#e4e7ec;filter:none}'
+        . '.ols-cancel{margin-left:14px;color:var(--ols-muted);text-decoration:underline}'
+        . '.ols-muted{color:var(--ols-muted);font-size:13px}'
+        . '.ols-hint{margin:14px 0 0;color:var(--ols-muted);font-size:13px}'
+        . '.ols-section{padding:22px 28px;border-top:1px solid var(--ols-line);background:#fbfbfc}'
+        . '.ols-section h3{margin:0 0 4px;font-size:14px;font-weight:600}'
+        . '.ols-section p.ols-muted{margin:0 0 14px}'
+        . '.ols-rows{margin:0 0 16px;border:1px solid var(--ols-line);border-radius:8px;background:#fff;overflow:hidden}'
+        . '.ols-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-top:1px solid var(--ols-line)}'
+        . '.ols-row:first-child{border-top:0}'
+        . '.ols-row form{margin:0}'
+        . '.ols-name{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px}'
+        . '.ols-empty{padding:14px;color:var(--ols-muted);font-size:13px;background:#fff}'
+        . '.ols-add{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:0}'
+        . '.ols-add select,.ols-add input{padding:9px 11px;border:1px solid #cdd2da;border-radius:7px;font:inherit;'
+        . 'background:#fff;color:var(--ols-ink);min-width:220px}'
+        . '.ols-add select:focus,.ols-add input:focus{outline:2px solid var(--ols-brand);outline-offset:-1px;border-color:var(--ols-brand)}'
+        . '.ols-log{margin:0;padding:13px;background:#fff;border:1px solid var(--ols-line);border-radius:8px;'
+        . 'font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;line-height:1.7;'
+        . 'overflow-x:auto;white-space:pre;color:#3a4050}'
+        . '.ols-foot{padding:14px 28px;border-top:1px solid var(--ols-line);color:var(--ols-muted);font-size:12px}'
+        . '</style>';
+}
+
+function ols_page_open(string $url): string
+{
+    return ols_styles()
+        . '<div class="ols-wrap">'
+        . '<div class="ols-head">'
+        . '<img src="' . ols_h(ols_asset_url($url, 'logo-beuningenit.svg')) . '" alt="Beuningen IT">'
+        . '<div class="ols-head-rule"></div>'
+        . '<h2>OpenLiteSpeed</h2>'
+        . '</div>';
 }
 
 function ols_page_close(): string
 {
-    return '</div>';
+    return '<div class="ols-foot">Managed by Beuningen IT</div></div>';
+}
+
+function ols_render(string $url, string $bodyHtml, string $sectionsHtml = ''): void
+{
+    echo ols_page_open($url) . '<div class="ols-body">' . $bodyHtml . '</div>' . $sectionsHtml . ols_page_close();
 }
 
 function ols_notice(string $kind, string $messageHtml): string
@@ -516,7 +674,8 @@ function ols_state_badge(string $state): string
         'unknown' => ['Unknown', 'ols-state-unknown'],
     ];
     $entry = $labels[$state] ?? $labels['unknown'];
-    return '<p class="ols-status">Status: <span class="ols-badge ' . $entry[1] . '">' . ols_h($entry[0]) . '</span></p>';
+    return '<p class="ols-status">Status'
+        . '<span class="ols-badge ' . $entry[1] . '"><span class="ols-dot"></span>' . ols_h($entry[0]) . '</span></p>';
 }
 
 function ols_reload_form(string $url, string $token): string
@@ -526,7 +685,7 @@ function ols_reload_form(string $url, string $token): string
         . '<input type="hidden" name="csrf_token" value="' . ols_h($token) . '">'
         . '<button type="submit" class="ols-button">Reload OpenLiteSpeed</button>'
         . '</form>'
-        . '<p class="ols-muted">A reload gracefully restarts OpenLiteSpeed to apply configuration changes. It affects all websites hosted on this server.</p>';
+        . '<p class="ols-hint">A reload gracefully restarts OpenLiteSpeed to apply configuration changes. It affects all websites hosted on this server.</p>';
 }
 
 function ols_confirm_form(string $url, string $token): string
@@ -536,66 +695,137 @@ function ols_confirm_form(string $url, string $token): string
         . '<input type="hidden" name="action" value="reload">'
         . '<input type="hidden" name="confirm" value="yes">'
         . '<input type="hidden" name="csrf_token" value="' . ols_h($token) . '">'
-        . '<button type="submit" class="ols-button ols-button-danger">Yes, reload OpenLiteSpeed</button>'
+        . '<button type="submit" class="ols-button">Yes, reload OpenLiteSpeed</button>'
         . '<a class="ols-cancel" href="' . ols_h($url) . '">Cancel</a>'
         . '</form>';
 }
 
 function ols_back_link(string $url): string
 {
-    return '<p><a href="' . ols_h($url) . '">Back to status</a></p>';
+    return '<p class="ols-hint"><a href="' . ols_h($url) . '">Back to status</a></p>';
 }
 
-function ols_admin_sections(): string
+function ols_allowlist_section(string $url, ?string $token): string
 {
     $entries = ols_allowlist_entries();
-    $html = '<div class="ols-section"><h3>Allowlisted resellers</h3>';
+    $html = '<div class="ols-section"><h3>Authorized resellers</h3>'
+        . '<p class="ols-muted">Only these resellers may reload OpenLiteSpeed.</p>';
+    $html .= '<div class="ols-rows">';
     if ($entries === []) {
-        $html .= '<p class="ols-muted">The allowlist is empty. No resellers are authorized to reload OpenLiteSpeed.</p>';
+        $html .= '<div class="ols-empty">No resellers are authorized yet.</div>';
     } else {
-        $html .= '<ul class="ols-list">';
         foreach ($entries as $entry) {
-            $html .= '<li>' . ols_h($entry) . '</li>';
+            $html .= '<div class="ols-row"><span class="ols-name">' . ols_h($entry) . '</span>';
+            if ($token !== null) {
+                $html .= '<form method="post" action="' . ols_h($url) . '">'
+                    . '<input type="hidden" name="action" value="remove_reseller">'
+                    . '<input type="hidden" name="username" value="' . ols_h($entry) . '">'
+                    . '<input type="hidden" name="csrf_token" value="' . ols_h($token) . '">'
+                    . '<button type="submit" class="ols-button ols-button-quiet">Remove</button>'
+                    . '</form>';
+            }
+            $html .= '</div>';
         }
-        $html .= '</ul>';
     }
-    $html .= '<p class="ols-muted">Edit ' . ols_h(OLS_ALLOWLIST_FILE) . ' as root to change this list.</p></div>';
-    $html .= '<div class="ols-section"><h3>Recent audit entries</h3>';
+    $html .= '</div>';
+
+    if ($token !== null) {
+        $candidates = array_values(array_diff(ols_known_resellers(), $entries));
+        if ($candidates === []) {
+            $html .= '<p class="ols-muted">Every reseller on this server is already authorized.</p>';
+        } else {
+            $html .= '<form class="ols-add" method="post" action="' . ols_h($url) . '">'
+                . '<input type="hidden" name="action" value="add_reseller">'
+                . '<input type="hidden" name="csrf_token" value="' . ols_h($token) . '">'
+                . '<select name="username" aria-label="Reseller to authorize">';
+            foreach ($candidates as $candidate) {
+                $html .= '<option value="' . ols_h($candidate) . '">' . ols_h($candidate) . '</option>';
+            }
+            $html .= '</select><button type="submit" class="ols-button">Add reseller</button></form>';
+        }
+    } else {
+        $html .= '<p class="ols-muted">Editing is unavailable because the request session could not be validated.</p>';
+    }
+    $html .= '<p class="ols-hint">Changes take effect immediately and are written to ' . ols_h(OLS_ALLOWLIST_FILE) . '.</p>';
+    return $html . '</div>';
+}
+
+function ols_log_section(): string
+{
+    $html = '<div class="ols-section"><h3>Recent audit entries</h3>'
+        . '<p class="ols-muted">Every authorization decision and reload attempt is recorded.</p>';
     $lines = ols_log_tail(20);
     if ($lines === []) {
-        $html .= '<p class="ols-muted">No audit entries yet.</p>';
+        $html .= '<div class="ols-empty">No audit entries yet.</div>';
     } else {
         $html .= '<pre class="ols-log">' . ols_h(implode("\n", $lines)) . '</pre>';
     }
-    $html .= '</div>';
-    return $html;
+    return $html . '</div>';
 }
 
-function ols_render_simple(string $inner): void
+function ols_admin_sections(string $url, array $identity): string
 {
-    echo ols_page_open() . $inner . ols_page_close();
+    return ols_allowlist_section($url, ols_csrf_token($identity)) . ols_log_section();
 }
 
-function ols_render_status_page(string $url, ?string $token, bool $isAdmin): void
+function ols_sections(string $level, string $url, array $identity, bool $authorized): string
+{
+    return ($level === 'admin' && $authorized) ? ols_admin_sections($url, $identity) : '';
+}
+
+function ols_render_status_page(string $url, array $identity, string $sections, string $flash = ''): void
 {
     $state = ols_service_state();
-    $inner = ols_state_badge($state);
+    $token = ols_csrf_token($identity);
+    $body = ols_state_badge($state) . $flash;
     if ($state === 'unavailable') {
-        $inner .= ols_notice('warning', 'The OpenLiteSpeed service (lsws) was not found on this server. Reloading is not available.');
+        $body .= ols_notice('warning', 'The OpenLiteSpeed service (lsws) was not found on this server. Reloading is not available.');
     } elseif ($token === null) {
-        $inner .= ols_notice('error', 'The reload action is unavailable because the request session could not be validated. Reopen this page from the DirectAdmin panel.');
+        $body .= ols_notice('error', 'The reload action is unavailable because the request session could not be validated. Reopen this page from the DirectAdmin panel.');
     } else {
-        $inner .= ols_reload_form($url, $token);
+        $body .= ols_reload_form($url, $token);
     }
-    ols_render_simple($inner . ($isAdmin ? ols_admin_sections() : ''));
+    ols_render($url, $body, $sections);
 }
 
-function ols_render_result_page(string $url, string $kind, string $message, bool $isAdmin): void
+function ols_render_result_page(string $url, string $kind, string $message, string $sections): void
 {
-    $inner = ols_state_badge(ols_service_state())
-        . ols_notice($kind, ols_h($message))
-        . ols_back_link($url);
-    ols_render_simple($inner . ($isAdmin ? ols_admin_sections() : ''));
+    ols_render($url, ols_state_badge(ols_service_state()) . ols_notice($kind, ols_h($message)) . ols_back_link($url), $sections);
+}
+
+function ols_handle_allowlist_change(array $identity, string $action, array $post, string $url): void
+{
+    if (!ols_csrf_valid($identity, ols_param($post, 'csrf_token'))) {
+        ols_audit($identity, $action, true, false, 'denied_invalid_token');
+        ols_render_result_page($url, 'error', 'The request could not be validated. Reopen this page and try again.', ols_admin_sections($url, $identity));
+        return;
+    }
+    $username = strtolower(trim(ols_param($post, 'username')));
+    if (!preg_match(OLS_USERNAME_PATTERN, $username)) {
+        ols_audit($identity, $action, true, false, 'denied_invalid_username');
+        ols_render_status_page($url, $identity, ols_admin_sections($url, $identity), ols_notice('error', 'That username is not valid.'));
+        return;
+    }
+    if ($action === 'add_reseller') {
+        if (ols_account_usertype($username) !== 'reseller') {
+            ols_audit($identity, $action, true, false, 'denied_not_a_reseller', 'target=' . $username);
+            ols_render_status_page($url, $identity, ols_admin_sections($url, $identity), ols_notice('error', ols_h($username) . ' is not an active reseller account on this server.'));
+            return;
+        }
+        $ok = ols_allowlist_add($username);
+        ols_audit($identity, 'allowlist_add', true, true, $ok ? 'success' : 'failed', 'target=' . $username);
+        $flash = $ok
+            ? ols_notice('success', ols_h($username) . ' can now reload OpenLiteSpeed.')
+            : ols_notice('error', 'The allowlist could not be updated. Check its ownership and permissions.');
+        ols_render_status_page($url, $identity, ols_admin_sections($url, $identity), $flash);
+        return;
+    }
+    $ok = ols_allowlist_remove($username);
+    ols_audit($identity, 'allowlist_remove', true, true, $ok ? 'success' : 'failed', 'target=' . $username);
+    $flash = $ok
+        ? ols_notice('success', ols_h($username) . ' can no longer reload OpenLiteSpeed.')
+        : ols_notice('error', 'The allowlist could not be updated. Check its ownership and permissions.');
+    ols_render_status_page($url, $identity, ols_admin_sections($url, $identity), $flash);
 }
 
 function ols_handle_post(array $identity, bool $authorized, string $url, bool $isAdmin): void
@@ -604,46 +834,55 @@ function ols_handle_post(array $identity, bool $authorized, string $url, bool $i
     $action = ols_param($post, 'action');
     if (!$authorized) {
         ols_audit($identity, 'reload_request', false, false, 'denied_not_authorized');
-        ols_render_simple(ols_notice('error', 'You are not authorized to use this plugin.'));
+        ols_render($url, ols_notice('error', 'You are not authorized to use this plugin.'));
         return;
     }
+    if ($action === 'add_reseller' || $action === 'remove_reseller') {
+        if (!$isAdmin) {
+            ols_audit($identity, $action, false, false, 'denied_not_admin');
+            ols_render($url, ols_notice('error', 'Only administrators can change the reseller allowlist.'));
+            return;
+        }
+        ols_handle_allowlist_change($identity, $action, $post, $url);
+        return;
+    }
+    $sections = $isAdmin ? ols_admin_sections($url, $identity) : '';
     if ($action !== 'reload') {
         ols_audit($identity, 'reload_request', true, false, 'denied_invalid_action');
-        ols_render_result_page($url, 'error', 'The request was not recognized.', $isAdmin);
+        ols_render_result_page($url, 'error', 'The request was not recognized.', $sections);
         return;
     }
     if (!ols_csrf_valid($identity, ols_param($post, 'csrf_token'))) {
         ols_audit($identity, 'reload_request', true, false, 'denied_invalid_token');
-        ols_render_result_page($url, 'error', 'The request could not be validated. Reopen this page and try again.', $isAdmin);
+        ols_render_result_page($url, 'error', 'The request could not be validated. Reopen this page and try again.', $sections);
         return;
     }
-    $token = ols_csrf_token($identity);
     if (ols_param($post, 'confirm') !== 'yes') {
-        ols_render_simple(ols_confirm_form($url, (string)$token));
+        ols_render($url, ols_confirm_form($url, (string)ols_csrf_token($identity)));
         return;
     }
     $result = ols_perform_reload($identity);
     switch ($result['outcome']) {
         case 'success':
             ols_audit($identity, 'reload', true, true, 'success', $result['detail']);
-            ols_render_result_page($url, 'success', 'OpenLiteSpeed was reloaded successfully.', $isAdmin);
+            ols_render_result_page($url, 'success', 'OpenLiteSpeed was reloaded successfully.', $isAdmin ? ols_admin_sections($url, $identity) : '');
             return;
         case 'failed':
             ols_audit($identity, 'reload', true, true, 'failed', $result['detail']);
-            ols_render_result_page($url, 'error', 'OpenLiteSpeed could not be reloaded. Ask a server administrator to check the audit log.', $isAdmin);
+            ols_render_result_page($url, 'error', 'OpenLiteSpeed could not be reloaded. Ask a server administrator to check the audit log.', $isAdmin ? ols_admin_sections($url, $identity) : '');
             return;
         case 'busy':
             ols_audit($identity, 'reload', true, false, 'locked');
-            ols_render_result_page($url, 'warning', 'Another reload is already in progress. Please try again shortly.', $isAdmin);
+            ols_render_result_page($url, 'warning', 'Another reload is already in progress. Please try again shortly.', $sections);
             return;
         case 'cooldown':
             ols_audit($identity, 'reload', true, false, 'cooldown', $result['detail']);
-            ols_render_result_page($url, 'warning', 'OpenLiteSpeed was reloaded moments ago. Please wait a few seconds and try again.', $isAdmin);
+            ols_render_result_page($url, 'warning', 'OpenLiteSpeed was reloaded moments ago. Please wait a few seconds and try again.', $sections);
             return;
         case 'not_installed':
         default:
             ols_audit($identity, 'reload', true, false, 'service_unavailable');
-            ols_render_result_page($url, 'warning', 'The OpenLiteSpeed service (lsws) was not found on this server.', $isAdmin);
+            ols_render_result_page($url, 'warning', 'The OpenLiteSpeed service (lsws) was not found on this server.', $sections);
             return;
     }
 }
@@ -651,18 +890,14 @@ function ols_handle_post(array $identity, bool $authorized, string $url, bool $i
 function ols_handle_request(string $level): void
 {
     $url = $level === 'admin' ? OLS_ADMIN_URL : OLS_RESELLER_URL;
-    if (!ols_php_supported()) {
-        ols_render_simple(ols_notice('error', 'This plugin requires PHP 7.4 or newer at /usr/local/bin/php.'));
-        return;
-    }
     if (!ols_running_as_root()) {
-        ols_render_simple(ols_notice('error', 'This plugin requires DirectAdmin 1.689 or newer with reseller_run_as=root support. Please update DirectAdmin.'));
+        ols_render($url, ols_notice('error', 'This plugin requires DirectAdmin 1.689 or newer with reseller_run_as=root support. Please update DirectAdmin.'));
         return;
     }
     $identity = ols_identity();
     if ($identity === null) {
         ols_audit(ols_anonymous_identity(), 'request', false, false, 'invalid_identity');
-        ols_render_simple(ols_notice('error', 'The request could not be validated.'));
+        ols_render($url, ols_notice('error', 'The request could not be validated.'));
         return;
     }
     $authorized = $level === 'admin' ? ols_admin_authorized($identity) : ols_reseller_authorized($identity);
@@ -673,8 +908,8 @@ function ols_handle_request(string $level): void
     }
     if (!$authorized) {
         ols_audit($identity, 'page_view', false, false, 'denied');
-        ols_render_simple(ols_notice('error', 'You are not authorized to use this plugin.'));
+        ols_render($url, ols_notice('error', 'You are not authorized to use this plugin.'));
         return;
     }
-    ols_render_status_page($url, ols_csrf_token($identity), $isAdmin);
+    ols_render_status_page($url, $identity, ols_sections($level, $url, $identity, $authorized));
 }

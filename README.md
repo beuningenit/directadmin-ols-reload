@@ -24,6 +24,17 @@ This plugin is only for existing OpenLiteSpeed servers. It does not install Open
 
 ## Installation
 
+### Option A: DirectAdmin Plugin Manager (easiest)
+
+1. Download `openlitespeed_reload-<version>.tar.gz` from the [releases page](https://github.com/sjoerdvanb/directadmin-ols-reload/releases).
+2. In DirectAdmin, go to **Admin » Plugin Manager » Add Plugin**, choose the downloaded `.tar.gz`, enter the admin password, and install.
+3. DirectAdmin extracts the plugin and runs its install script, which validates the server (DirectAdmin >= 1.689, systemd, OpenLiteSpeed, PHP >= 7.4) and refuses cleanly if a requirement is missing.
+4. Authorize resellers via the allowlist (see below).
+
+Note: DirectAdmin's Plugin Manager only accepts `.tar.gz` archives. The `.zip` on the releases page is a convenience copy of the same files for inspection or manual installs; it cannot be uploaded to Plugin Manager.
+
+### Option B: from a git checkout
+
 As root on the server:
 
 ```sh
@@ -51,7 +62,7 @@ To bypass the environment checks on a lab machine (not recommended in production
 OLS_RELOAD_FORCE=1 sh installer/install.sh
 ```
 
-Alternatively, build a Plugin Manager package with `sh installer/package.sh` and upload `dist/openlitespeed_reload-<version>.tar.gz` through **Admin » Plugin Manager**; DirectAdmin then runs `scripts/install.sh` itself.
+You can also build the Plugin Manager package yourself with `sh installer/package.sh`; it writes `dist/openlitespeed_reload-<version>.tar.gz` (and a convenience `.zip` when `zip` or `python3` is available).
 
 If the menu entry does not appear immediately, reload the Evolution interface (log out and back in).
 

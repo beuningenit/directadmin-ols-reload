@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-PLUGIN_DIR=/usr/local/directadmin/plugins/openlitespeed_reload
+EXPECTED_PLUGIN_DIR=/usr/local/directadmin/plugins/openlitespeed_reload
+PLUGIN_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." 2>/dev/null && pwd || echo "$EXPECTED_PLUGIN_DIR")
 DA_BIN=/usr/local/directadmin/directadmin
 PHP_BIN=/usr/local/bin/php
 LOG_FILE=/var/log/directadmin-openlitespeed-reload.log
@@ -32,6 +33,9 @@ if [ "$(id -u)" != "0" ]; then
 fi
 if [ ! -f "$PLUGIN_DIR/plugin.conf" ]; then
     fail "plugin files not found at $PLUGIN_DIR"
+fi
+if [ "$PLUGIN_DIR" != "$EXPECTED_PLUGIN_DIR" ]; then
+    fail "plugin must be installed at $EXPECTED_PLUGIN_DIR but was found at $PLUGIN_DIR; use the plugin id openlitespeed_reload"
 fi
 if [ ! -x "$DA_BIN" ]; then
     fail "DirectAdmin binary not found at $DA_BIN"

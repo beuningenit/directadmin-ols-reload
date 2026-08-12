@@ -42,18 +42,37 @@ if [ ! -x "$DA_BIN" ]; then
 fi
 
 da_version_output=$("$DA_BIN" version 2>/dev/null || "$DA_BIN" v 2>/dev/null || true)
-da_version=$(printf '%s\n' "$da_version_output" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n 1 || true)
+da_version=$(printf '%s\n' "$da_version_output" \
+    | grep -oiE 'version[^0-9]{0,4}[0-9]+\.[0-9]+(\.[0-9]+)?' \
+    | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n 1 || true)
+if [ -z "$da_version" ]; then
+    da_version=$(printf '%s\n' "$da_version_output" | grep -oE '(^|[^0-9.])[0-9]{1,2}\.[0-9]+(\.[0-9]+)?' \
+        | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -n 1 || true)
+fi
 if [ -z "$da_version" ]; then
     warn_or_fail "could not determine the DirectAdmin version"
 else
     da_major=${da_version%%.*}
     da_rest=${da_version#*.}
     da_minor=${da_rest%%.*}
-    if [ "$da_major" -gt 1 ] || { [ "$da_major" -eq 1 ] && [ "$da_minor" -ge 689 ]; }; then
+    if [ "$da_major" -gt 99 ]; then
+        warn_or_fail "could not determine the DirectAdmin version (parsed an implausible value: $da_version)"
+    elif [ "$da_major" -gt 1 ] || { [ "$da_major" -eq 1 ] && [ "$da_minor" -ge 689 ]; }; then
         note "DirectAdmin $da_version supports reseller_run_as=root"
     else
         warn_or_fail "DirectAdmin $da_version is older than 1.689 and does not support reseller_run_as=root; please update DirectAdmin"
     fi
+fi
+
+DA_CONF=/usr/local/directadmin/conf/directadmin.conf
+if [ -f "$DA_CONF" ] && grep -qE '^plugins_allowed_run_as=0' "$DA_CONF"; then
+    warn_or_fail "plugins_allowed_run_as=0 in $DA_CONF disables plugin run_as; the plugin cannot run as root until this is changed"
+else
+    note "plugin run_as is not disabled in directadmin.conf"
+fi
+
+if [ -e "$PLUGIN_DIR/referer_check.allow" ]; then
+    fail "$PLUGIN_DIR/referer_check.allow exists; it disables DirectAdmin's referer protection for this plugin. Remove it and re-run."
 fi
 
 SYSTEMCTL=""
@@ -89,12 +108,13 @@ if [ "$php_version_id" -lt 70400 ]; then
 fi
 note "PHP CLI version $("$PHP_BIN" -r 'echo PHP_VERSION;') is supported"
 
+mkdir -p "$PLUGIN_DIR/config"
+chmod 700 "$PLUGIN_DIR/config"
 chown -R root:root "$PLUGIN_DIR"
-find "$PLUGIN_DIR" -type d -exec chmod 755 {} +
+find "$PLUGIN_DIR" -path "$PLUGIN_DIR/config" -prune -o -type d -exec chmod 755 {} +
 find "$PLUGIN_DIR" -path "$PLUGIN_DIR/config" -prune -o -type f -exec chmod 644 {} +
 chmod 755 "$PLUGIN_DIR/reseller/index.html" "$PLUGIN_DIR/reseller/menu.json.raw" "$PLUGIN_DIR/admin/index.html"
 chmod 755 "$PLUGIN_DIR"/scripts/*.sh
-mkdir -p "$PLUGIN_DIR/config"
 chmod 700 "$PLUGIN_DIR/config"
 note "ownership and permissions applied"
 
@@ -111,10 +131,19 @@ if [ ! -f "$SECRET_FILE" ]; then
     if command -v openssl >/dev/null 2>&1; then
         (umask 077; openssl rand -hex 32 > "$SECRET_FILE")
     else
-        (umask 077; od -An -N32 -tx1 /dev/urandom | tr -d ' \n' > "$SECRET_FILE")
+        (umask 077; od -An -N32 -tx1 < /dev/urandom | tr -d ' \n' > "$SECRET_FILE")
+    fi
+    secret_length=$(wc -c < "$SECRET_FILE" | tr -d ' ')
+    if [ "$secret_length" -lt 32 ]; then
+        rm -f "$SECRET_FILE"
+        fail "failed to generate a request-validation secret (got $secret_length bytes); install openssl and retry"
     fi
     note "generated request-validation secret"
 else
+    secret_length=$(wc -c < "$SECRET_FILE" | tr -d ' ')
+    if [ "$secret_length" -lt 32 ]; then
+        fail "existing $SECRET_FILE is too short ($secret_length bytes); remove it and re-run to regenerate"
+    fi
     note "existing request-validation secret preserved"
 fi
 chown root:root "$SECRET_FILE"
@@ -134,7 +163,8 @@ chmod 600 "$LOG_FILE"
 
 cat > "$LOGROTATE_FILE" <<'EOF'
 /var/log/directadmin-openlitespeed-reload.log {
-    monthly
+    daily
+    maxsize 16M
     rotate 6
     compress
     delaycompress

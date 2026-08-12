@@ -23,10 +23,13 @@ tarball="$plain_tar.gz"
 rm -f "$plain_tar" "$tarball"
 tar --owner=0 --group=0 --numeric-owner --mode='u=rwX,go=rX' \
     -cf "$plain_tar" -C "$stage" \
-    plugin.conf lib images config
+    plugin.conf lib images
 tar --owner=0 --group=0 --numeric-owner --mode='u=rwx,go=rx' \
     -rf "$plain_tar" -C "$stage" \
     reseller admin scripts
+tar --owner=0 --group=0 --numeric-owner --mode='u=rwX,go=' \
+    -rf "$plain_tar" -C "$stage" \
+    config
 gzip -fn "$plain_tar"
 
 if ! tar -tzf "$tarball" | grep -qx 'plugin.conf'; then

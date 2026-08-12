@@ -105,6 +105,22 @@ curl -sk "https://SERVER:2222$PAGE" -H "Cookie: session=..." -X POST --data "act
 | B2 | Brand colour | Inspect the reload button | Background `#FFA900` with dark text; focus ring on inputs uses the same colour |
 | B3 | Static asset served | Request `/CMD_PLUGINS_RESELLER/openlitespeed_reload/images/logo-beuningenit.svg` | SVG served as-is, not executed |
 
+## Hardening regression tests
+
+| # | Test | Steps | Expected |
+|---|------|-------|----------|
+| S1 | Installer copies as root | Clone the repo into a non-root-owned directory (e.g. `/tmp/x` as a normal user), then run `installer/install.sh` as root | Every file under the plugin dir is `root:root` before `scripts/install.sh` runs; `ls -lR` shows nothing owned by another uid and nothing group/world writable |
+| S1b | Symlinked source refused | In a non-root-owned clone, replace `plugin/scripts/install.sh` with a symlink to another file, then run `installer/install.sh` as root | Installer aborts before copying with the symbolic-links error; nothing is executed and the plugin dir is unchanged |
+| S2 | Tampered `user.conf` denies | As root, `chmod 666` a reseller's `user.conf`, then load the plugin page as that reseller | Access denied (untrusted metadata); restore `chmod 600` and confirm access returns |
+| S3 | Log cap holds | Append filler until the audit log exceeds 32 MB, then trigger any audited action | New entries go to syslog (`journalctl -t openlitespeed_reload`); the file stops growing |
+| S4 | Log rotates on size | `logrotate -d /etc/logrotate.d/directadmin-openlitespeed-reload` | Config parses; `maxsize 16M` and `create 0600 root root` present |
+| S5 | State cache bounds systemctl | Load the status page 20 times in a few seconds while running `journalctl -f` or counting `systemctl` execs | Far fewer than 2 systemctl invocations per request; state still updates correctly right after a reload |
+| S6 | referer_check.allow refused | `touch /usr/local/directadmin/plugins/openlitespeed_reload/referer_check.allow`, re-run the installer | Installer fails with a clear error; remove the file and re-run to succeed |
+| S7 | run_as disabled detected | Set `plugins_allowed_run_as=0` in `directadmin.conf`, re-run the installer | Installer warns that run_as is disabled; plugin page shows the not-running-as-root notice rather than acting |
+| S8 | Secret validated | `: > config/secret` (empty it), re-run the installer | Installer fails with "too short" rather than reporting success |
+| S9 | Packaged config is private | `tar -tzvf dist/openlitespeed_reload.tar.gz` | `config/` is `drwx------` and `allowed_resellers.example` is `-rw-------` |
+| S10 | Login-as attribution | Perform one admin→reseller login-as and reload | Audit line reads `user=<reseller> master=<admin>` (see README verification note) |
+
 ## Audit verification
 
 After the full run, `cat $LOG` and verify each line has `timestamp user= master= ip= event= authorized= attempted= result=`, that denied attempts from `resno` are present, and that every executed reload produced a `result=started` line immediately followed by a `result=success` line with `detail="exit=0 post_state=active"` (or `result=failed` with sanitized detail).

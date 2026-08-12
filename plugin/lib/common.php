@@ -9,6 +9,9 @@ const OLS_LOG_FILE = '/var/log/directadmin-openlitespeed-reload.log';
 const OLS_LOCK_DIR = '/run/directadmin-openlitespeed-reload';
 const OLS_LOCK_FILE = OLS_LOCK_DIR . '/reload.lock';
 const OLS_COOLDOWN_SECONDS = 10;
+const OLS_STATE_CACHE_FILE = OLS_LOCK_DIR . '/state.cache';
+const OLS_STATE_CACHE_SECONDS = 3;
+const OLS_LOG_MAX_BYTES = 33554432;
 const OLS_SERVICE = 'lsws.service';
 const OLS_USERNAME_PATTERN = '/^[a-z][a-z0-9_]{0,31}$/';
 const OLS_DA_USERS_DIR = '/usr/local/directadmin/data/users';
@@ -34,11 +37,11 @@ function ols_decode_request(?string $raw): array
     if ($raw === null || $raw === '') {
         return [];
     }
-    parse_str(html_entity_decode($raw), $pairs);
+    parse_str($raw, $pairs);
     $params = [];
     foreach ($pairs as $key => $value) {
         if (is_string($value)) {
-            $params[(string)$key] = $value;
+            $params[(string)$key] = html_entity_decode($value, ENT_QUOTES, 'UTF-8');
         }
     }
     return $params;
@@ -81,6 +84,11 @@ function ols_identity(): ?array
     if (count($parts) > 2) {
         return null;
     }
+    foreach ($parts as $part) {
+        if (trim($part) === '') {
+            return null;
+        }
+    }
     $effective = strtolower(trim((string)end($parts)));
     $master = count($parts) === 2 ? strtolower(trim($parts[0])) : '';
     if ($master === '') {
@@ -101,13 +109,40 @@ function ols_identity(): ?array
     return ['effective' => $effective, 'master' => $master];
 }
 
+function ols_da_data_owner(): ?int
+{
+    clearstatcache(true, OLS_DA_USERS_DIR);
+    $info = @stat(OLS_DA_USERS_DIR);
+    if ($info === false) {
+        return null;
+    }
+    return (int)$info['uid'];
+}
+
+function ols_user_conf_trusted(string $path): bool
+{
+    clearstatcache(true, $path);
+    $info = @lstat($path);
+    if ($info === false || ($info['mode'] & 0170000) !== 0100000) {
+        return false;
+    }
+    if (($info['mode'] & 0022) !== 0) {
+        return false;
+    }
+    if ($info['uid'] === 0) {
+        return true;
+    }
+    $owner = ols_da_data_owner();
+    return $owner !== null && $info['uid'] === $owner;
+}
+
 function ols_account_usertype(string $username): string
 {
     if (!preg_match(OLS_USERNAME_PATTERN, $username)) {
         return '';
     }
     $path = OLS_DA_USERS_DIR . '/' . $username . '/user.conf';
-    if (!is_file($path)) {
+    if (!is_file($path) || !ols_user_conf_trusted($path)) {
         return '';
     }
     $lines = @file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
@@ -356,7 +391,65 @@ function ols_run_systemctl(array $arguments, int $timeoutSeconds): array
     return ['spawned' => true, 'exit' => $exit, 'stdout' => $stdout, 'stderr' => $stderr];
 }
 
+function ols_state_cache_get(): ?string
+{
+    if (is_link(OLS_STATE_CACHE_FILE)) {
+        return null;
+    }
+    $raw = @file_get_contents(OLS_STATE_CACHE_FILE);
+    if ($raw === false) {
+        return null;
+    }
+    $parts = explode(' ', trim($raw));
+    if (count($parts) !== 2) {
+        return null;
+    }
+    $age = time() - (int)$parts[0];
+    if ((int)$parts[0] <= 0 || $age < 0 || $age >= OLS_STATE_CACHE_SECONDS) {
+        return null;
+    }
+    return in_array($parts[1], ['running', 'stopped', 'unavailable', 'unknown'], true) ? $parts[1] : null;
+}
+
+function ols_state_cache_put(string $state): void
+{
+    if (!ols_lock_dir_ready() || is_link(OLS_STATE_CACHE_FILE)) {
+        return;
+    }
+    $handle = @fopen(OLS_STATE_CACHE_FILE, 'c');
+    if ($handle === false) {
+        return;
+    }
+    @chmod(OLS_STATE_CACHE_FILE, 0600);
+    if (flock($handle, LOCK_EX | LOCK_NB)) {
+        ftruncate($handle, 0);
+        rewind($handle);
+        fwrite($handle, time() . ' ' . $state);
+        fflush($handle);
+        flock($handle, LOCK_UN);
+    }
+    fclose($handle);
+}
+
+function ols_state_cache_clear(): void
+{
+    if (!is_link(OLS_STATE_CACHE_FILE)) {
+        @unlink(OLS_STATE_CACHE_FILE);
+    }
+}
+
 function ols_service_state(): string
+{
+    $cached = ols_state_cache_get();
+    if ($cached !== null) {
+        return $cached;
+    }
+    $state = ols_service_state_uncached();
+    ols_state_cache_put($state);
+    return $state;
+}
+
+function ols_service_state_uncached(): string
 {
     $load = ols_run_systemctl(['show', OLS_SERVICE, '--property=LoadState', '--value'], 10);
     if (!$load['spawned']) {
@@ -457,6 +550,7 @@ function ols_perform_reload(array $identity): array
     ols_audit($identity, 'reload', true, true, 'started');
     $restart = ols_run_systemctl(['restart', OLS_SERVICE], 120);
     ols_mark_reload_time($handle);
+    ols_state_cache_clear();
     $active = '';
     for ($attempt = 0; $attempt < 10; $attempt++) {
         $check = ols_run_systemctl(['is-active', OLS_SERVICE], 10);
@@ -490,7 +584,7 @@ function ols_sanitize_log_value(string $value): string
 
 function ols_request_ip(): string
 {
-    foreach (['REMOTE_ADDR', 'SESSION_IP', 'IP'] as $key) {
+    foreach (['caller_ip', 'CALLER_IP', 'REMOTE_ADDR', 'SESSION_IP', 'IP'] as $key) {
         $value = getenv($key);
         if ($value !== false && filter_var($value, FILTER_VALIDATE_IP) !== false) {
             return $value;
@@ -516,7 +610,9 @@ function ols_audit(array $identity, string $event, bool $authorized, bool $attem
         $line .= ' detail="' . ols_sanitize_log_value($detail) . '"';
     }
     $line .= "\n";
-    $handle = @fopen(OLS_LOG_FILE, 'a');
+    clearstatcache(true, OLS_LOG_FILE);
+    $oversized = is_file(OLS_LOG_FILE) && (int)@filesize(OLS_LOG_FILE) >= OLS_LOG_MAX_BYTES;
+    $handle = $oversized ? false : @fopen(OLS_LOG_FILE, 'a');
     if ($handle !== false) {
         @chmod(OLS_LOG_FILE, 0600);
         if (flock($handle, LOCK_EX)) {
@@ -828,18 +924,32 @@ function ols_handle_allowlist_change(array $identity, string $action, array $pos
     ols_render_status_page($url, $identity, ols_admin_sections($url, $identity), $flash);
 }
 
+function ols_event_for_action(string $action): string
+{
+    switch ($action) {
+        case 'reload':
+            return 'reload_request';
+        case 'add_reseller':
+            return 'allowlist_add_request';
+        case 'remove_reseller':
+            return 'allowlist_remove_request';
+        default:
+            return 'unrecognized_request';
+    }
+}
+
 function ols_handle_post(array $identity, bool $authorized, string $url, bool $isAdmin): void
 {
     $post = ols_post_params();
     $action = ols_param($post, 'action');
     if (!$authorized) {
-        ols_audit($identity, 'reload_request', false, false, 'denied_not_authorized');
+        ols_audit($identity, ols_event_for_action($action), false, false, 'denied_not_authorized');
         ols_render($url, ols_notice('error', 'You are not authorized to use this plugin.'));
         return;
     }
     if ($action === 'add_reseller' || $action === 'remove_reseller') {
         if (!$isAdmin) {
-            ols_audit($identity, $action, false, false, 'denied_not_admin');
+            ols_audit($identity, ols_event_for_action($action), false, false, 'denied_not_admin');
             ols_render($url, ols_notice('error', 'Only administrators can change the reseller allowlist.'));
             return;
         }

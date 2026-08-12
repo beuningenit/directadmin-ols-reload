@@ -12,8 +12,14 @@ if [ ! -d "$TARGET" ]; then
     exit 0
 fi
 
-if [ -x "$TARGET/scripts/uninstall.sh" ]; then
-    sh "$TARGET/scripts/uninstall.sh"
+if [ -f "$TARGET/scripts/uninstall.sh" ] && [ ! -L "$TARGET/scripts/uninstall.sh" ]; then
+    owner=$(stat -c %u "$TARGET/scripts/uninstall.sh" 2>/dev/null || echo unknown)
+    if [ "$owner" = "0" ]; then
+        sh "$TARGET/scripts/uninstall.sh"
+    else
+        echo "WARNING: $TARGET/scripts/uninstall.sh is not owned by root, skipping it" >&2
+        rm -f /etc/logrotate.d/directadmin-openlitespeed-reload
+    fi
 fi
 
 rm -rf "$TARGET"

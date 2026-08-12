@@ -94,6 +94,8 @@ curl -sk "https://SERVER:2222$PAGE" -H "Cookie: session=..." -X POST --data "act
 | M8 | Comments preserved | Add `# managed by ops` to the allowlist, then add and remove a reseller via GUI | Comment line still present afterwards |
 | M9 | Unsafe permissions fail closed | `chmod 666` the allowlist, try to add via GUI | Edit refused with an error notice; restore `chmod 600` |
 | M10 | Duplicate add is safe | Add `resok` twice | Second add succeeds without duplicating the entry |
+| M11 | Concurrent edits serialize | Fire a simultaneous add of `resA` and remove of `resB` (`curl ... & curl ... &`) | Both changes survive; neither request resurrects or drops the other's entry |
+| M12 | Short write does not clobber | Simulate a full filesystem for `config/` (e.g. a small tmpfs mount) and attempt an add | Error notice; original allowlist intact and unchanged; no `.tmp` file left behind |
 
 ## Branding
 

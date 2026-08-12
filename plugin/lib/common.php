@@ -189,6 +189,27 @@ function ols_allowlist_entries(): array
     return $result;
 }
 
+function ols_allowlist_lock()
+{
+    if (!ols_lock_dir_ready()) {
+        return null;
+    }
+    $path = OLS_LOCK_DIR . '/allowlist.lock';
+    if (is_link($path)) {
+        return null;
+    }
+    $handle = @fopen($path, 'c');
+    if ($handle === false) {
+        return null;
+    }
+    @chmod($path, 0600);
+    if (!flock($handle, LOCK_EX)) {
+        fclose($handle);
+        return null;
+    }
+    return $handle;
+}
+
 function ols_allowlist_write(array $lines): bool
 {
     if (!ols_file_is_root_protected(OLS_ALLOWLIST_FILE)) {
@@ -205,9 +226,9 @@ function ols_allowlist_write(array $lines): bool
     }
     @chmod($temp, 0600);
     $written = fwrite($handle, $body);
-    fflush($handle);
+    $flushed = fflush($handle);
     fclose($handle);
-    if ($written === false) {
+    if ($written !== strlen($body) || $flushed === false) {
         @unlink($temp);
         return false;
     }
@@ -219,32 +240,43 @@ function ols_allowlist_write(array $lines): bool
     return true;
 }
 
-function ols_allowlist_add(string $username): bool
+function ols_allowlist_update(string $username, bool $shouldBePresent): bool
 {
     if (!preg_match(OLS_USERNAME_PATTERN, $username)) {
         return false;
     }
-    if (in_array($username, ols_allowlist_entries(), true)) {
-        return true;
+    $lock = ols_allowlist_lock();
+    if ($lock === null) {
+        return false;
     }
-    $lines = ols_allowlist_lines();
-    $lines[] = $username;
-    return ols_allowlist_write($lines);
+    $kept = [];
+    $present = false;
+    foreach (ols_allowlist_lines() as $line) {
+        if (strtolower(trim($line)) === $username) {
+            $present = true;
+            if (!$shouldBePresent) {
+                continue;
+            }
+        }
+        $kept[] = $line;
+    }
+    if ($shouldBePresent && !$present) {
+        $kept[] = $username;
+    }
+    $result = ols_allowlist_write($kept);
+    flock($lock, LOCK_UN);
+    fclose($lock);
+    return $result;
+}
+
+function ols_allowlist_add(string $username): bool
+{
+    return ols_allowlist_update($username, true);
 }
 
 function ols_allowlist_remove(string $username): bool
 {
-    if (!preg_match(OLS_USERNAME_PATTERN, $username)) {
-        return false;
-    }
-    $kept = [];
-    foreach (ols_allowlist_lines() as $line) {
-        if (strtolower(trim($line)) === $username) {
-            continue;
-        }
-        $kept[] = $line;
-    }
-    return ols_allowlist_write($kept);
+    return ols_allowlist_update($username, false);
 }
 
 function ols_reseller_authorized(array $identity): bool

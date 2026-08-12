@@ -3,8 +3,9 @@
 declare(strict_types=1);
 
 const OLS_PLUGIN_DIR = '/usr/local/directadmin/plugins/openlitespeed_reload';
-const OLS_ALLOWLIST_FILE = OLS_PLUGIN_DIR . '/config/allowed_resellers';
-const OLS_SECRET_FILE = OLS_PLUGIN_DIR . '/config/secret';
+const OLS_CONFIG_DIR = '/etc/directadmin-openlitespeed-reload';
+const OLS_ALLOWLIST_FILE = OLS_CONFIG_DIR . '/allowed_resellers';
+const OLS_SECRET_FILE = OLS_CONFIG_DIR . '/secret';
 const OLS_LOG_FILE = '/var/log/directadmin-openlitespeed-reload.log';
 const OLS_LOCK_DIR = '/run/directadmin-openlitespeed-reload';
 const OLS_LOCK_FILE = OLS_LOCK_DIR . '/reload.lock';

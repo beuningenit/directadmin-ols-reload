@@ -51,10 +51,11 @@ The installer:
 1. Copies the plugin to `/usr/local/directadmin/plugins/openlitespeed_reload/` (preserving any existing config)
 2. Validates DirectAdmin >= 1.689, systemd, the `lsws` unit, the OpenLiteSpeed binary, and PHP >= 7.4
 3. Sets root ownership, executable bits, and restrictive permissions on config and log files
-4. Creates an empty allowlist at `config/allowed_resellers` if none exists (empty allowlist = nobody authorized)
-5. Generates a root-only request-validation secret
-6. Creates `/var/log/directadmin-openlitespeed-reload.log` (0600 root) and a logrotate policy
-7. Marks the plugin active and installed
+4. Creates `/etc/directadmin-openlitespeed-reload/` (0700 root) and an empty `allowed_resellers` if none exists (empty allowlist = nobody authorized)
+5. Migrates an allowlist and secret from the old in-plugin `config/` directory if it finds one
+6. Generates a root-only request-validation secret
+7. Creates `/var/log/directadmin-openlitespeed-reload.log` (0600 root) and a logrotate policy
+8. Marks the plugin active and installed
 
 The installer is idempotent; re-running it never overwrites the allowlist, the secret, or the log.
 
@@ -68,7 +69,25 @@ You can also build the Plugin Manager package yourself with `sh installer/packag
 
 If the menu entry does not appear immediately, reload the Evolution interface (log out and back in).
 
+## Where settings are stored
+
+Everything that must survive an upgrade lives **outside** the plugin directory:
+
+| Path | Contents | Mode |
+|------|----------|------|
+| `/etc/directadmin-openlitespeed-reload/allowed_resellers` | Authorized reseller usernames | 0600 root |
+| `/etc/directadmin-openlitespeed-reload/secret` | Request-validation secret | 0600 root |
+| `/var/log/directadmin-openlitespeed-reload.log` | Audit log | 0600 root |
+
+DirectAdmin deletes the whole plugin directory when a plugin is removed, so nothing that matters is kept there. Removing the plugin and uploading a newer version does **not** lose your authorized resellers.
+
+Versions up to 1.2.0 stored the allowlist and secret inside the plugin directory. Installing 1.3.0 or newer over such an install migrates both files automatically; the old copies are left in place and are simply no longer read.
+
 ## Upgrade procedure
+
+**Via Plugin Manager:** remove the installed plugin and upload the new `.tar.gz`. Your authorized resellers, secret, and audit log are preserved because they live in `/etc`.
+
+**From a git checkout:**
 
 ```sh
 cd /root/directadmin-ols-reload
@@ -76,7 +95,7 @@ git pull
 sh installer/install.sh
 ```
 
-Ordinary upgrades replace the plugin code but preserve `config/allowed_resellers`, `config/secret`, and the audit log.
+Either route replaces the plugin code and preserves configuration.
 
 ## Uninstallation
 
@@ -84,9 +103,15 @@ Ordinary upgrades replace the plugin code but preserve `config/allowed_resellers
 sh installer/uninstall.sh
 ```
 
-This backs up a non-empty allowlist to `/root/openlitespeed_reload-allowed_resellers-<timestamp>.bak`, removes the logrotate policy and the plugin directory, and leaves OpenLiteSpeed, DirectAdmin configuration, and the audit log untouched. Remove `/var/log/directadmin-openlitespeed-reload.log` manually if you no longer want it.
+This removes the logrotate policy and the plugin directory, and leaves OpenLiteSpeed, DirectAdmin configuration, the audit log, and your configuration in `/etc/directadmin-openlitespeed-reload/` untouched — so a later reinstall picks the allowlist back up.
 
-Uninstalling through **Admin » Plugin Manager** works too; DirectAdmin runs `scripts/uninstall.sh` before deleting the directory.
+To erase the configuration as well:
+
+```sh
+sh installer/uninstall.sh --purge
+```
+
+Uninstalling through **Admin » Plugin Manager** works too; DirectAdmin runs `scripts/uninstall.sh` before deleting the directory. That also keeps `/etc/directadmin-openlitespeed-reload/`; remove it by hand if you want the settings gone. The audit log is never deleted automatically — remove `/var/log/directadmin-openlitespeed-reload.log` manually if you no longer want it.
 
 ## Adding a reseller to the allowlist
 
@@ -101,7 +126,7 @@ Only admin accounts can reach this section, and the dropdown is populated from a
 As root, add the DirectAdmin reseller username on its own line:
 
 ```sh
-echo "resellername" >> /usr/local/directadmin/plugins/openlitespeed_reload/config/allowed_resellers
+echo "resellername" >> /etc/directadmin-openlitespeed-reload/allowed_resellers
 ```
 
 Rules:
@@ -119,7 +144,7 @@ Changes take effect on the next request; no restart is needed.
 Use the **Remove** button in **Admin » Reload OpenLiteSpeed**, or edit the file as root and delete the line:
 
 ```sh
-vi /usr/local/directadmin/plugins/openlitespeed_reload/config/allowed_resellers
+vi /etc/directadmin-openlitespeed-reload/allowed_resellers
 ```
 
 Both routes take effect on the next request. Comment lines in the file are preserved when the GUI edits it.

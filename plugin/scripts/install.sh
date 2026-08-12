@@ -7,8 +7,10 @@ DA_BIN=/usr/local/directadmin/directadmin
 PHP_BIN=/usr/local/bin/php
 LOG_FILE=/var/log/directadmin-openlitespeed-reload.log
 LOGROTATE_FILE=/etc/logrotate.d/directadmin-openlitespeed-reload
-ALLOWLIST_FILE="$PLUGIN_DIR/config/allowed_resellers"
-SECRET_FILE="$PLUGIN_DIR/config/secret"
+CONFIG_DIR=/etc/directadmin-openlitespeed-reload
+ALLOWLIST_FILE="$CONFIG_DIR/allowed_resellers"
+SECRET_FILE="$CONFIG_DIR/secret"
+LEGACY_CONFIG_DIR="$PLUGIN_DIR/config"
 FORCE="${OLS_RELOAD_FORCE:-0}"
 
 fail() {
@@ -118,9 +120,27 @@ chmod 755 "$PLUGIN_DIR"/scripts/*.sh
 chmod 700 "$PLUGIN_DIR/config"
 note "ownership and permissions applied"
 
+mkdir -p "$CONFIG_DIR"
+chown root:root "$CONFIG_DIR"
+chmod 700 "$CONFIG_DIR"
+
+for name in allowed_resellers secret; do
+    if [ ! -f "$CONFIG_DIR/$name" ] && [ -f "$LEGACY_CONFIG_DIR/$name" ] && [ ! -L "$LEGACY_CONFIG_DIR/$name" ]; then
+        (umask 077; cat "$LEGACY_CONFIG_DIR/$name" > "$CONFIG_DIR/$name")
+        chown root:root "$CONFIG_DIR/$name"
+        chmod 600 "$CONFIG_DIR/$name"
+        note "migrated $name from $LEGACY_CONFIG_DIR to $CONFIG_DIR"
+    fi
+done
+
 if [ ! -f "$ALLOWLIST_FILE" ]; then
     (umask 077; : > "$ALLOWLIST_FILE")
     note "created empty allowlist at $ALLOWLIST_FILE"
+    recovered=$(ls -1t /root/openlitespeed_reload-allowed_resellers-*.bak 2>/dev/null | head -n 1 || true)
+    if [ -n "${recovered:-}" ]; then
+        echo "NOTE: a previous allowlist backup exists at $recovered"
+        echo "      restore it with: cp \"$recovered\" \"$ALLOWLIST_FILE\" && chmod 600 \"$ALLOWLIST_FILE\""
+    fi
 else
     note "existing allowlist preserved"
 fi

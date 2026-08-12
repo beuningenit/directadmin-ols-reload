@@ -7,8 +7,10 @@ DA_BIN=/usr/local/directadmin/directadmin
 PHP_BIN=/usr/local/bin/php
 LOG_FILE=/var/log/directadmin-openlitespeed-reload.log
 LOGROTATE_FILE=/etc/logrotate.d/directadmin-openlitespeed-reload
-ALLOWLIST_FILE="$PLUGIN_DIR/config/allowed_resellers"
-SECRET_FILE="$PLUGIN_DIR/config/secret"
+CONFIG_DIR=/etc/directadmin-openlitespeed-reload
+ALLOWLIST_FILE="$CONFIG_DIR/allowed_resellers"
+SECRET_FILE="$CONFIG_DIR/secret"
+LEGACY_CONFIG_DIR="$PLUGIN_DIR/config"
 FORCE="${OLS_RELOAD_FORCE:-0}"
 
 fail() {
@@ -118,9 +120,43 @@ chmod 755 "$PLUGIN_DIR"/scripts/*.sh
 chmod 700 "$PLUGIN_DIR/config"
 note "ownership and permissions applied"
 
+mkdir -p "$CONFIG_DIR"
+chown root:root "$CONFIG_DIR"
+chmod 700 "$CONFIG_DIR"
+
+for name in allowed_resellers secret; do
+    if [ ! -f "$CONFIG_DIR/$name" ] && [ -f "$LEGACY_CONFIG_DIR/$name" ] && [ ! -L "$LEGACY_CONFIG_DIR/$name" ]; then
+        (umask 077; cat "$LEGACY_CONFIG_DIR/$name" > "$CONFIG_DIR/$name")
+        chown root:root "$CONFIG_DIR/$name"
+        chmod 600 "$CONFIG_DIR/$name"
+        note "migrated $name from $LEGACY_CONFIG_DIR to $CONFIG_DIR"
+    fi
+done
+
+backup_is_trustworthy() {
+    [ -f "$1" ] || return 1
+    [ -L "$1" ] && return 1
+    [ "$(stat -c %u "$1" 2>/dev/null || echo 1)" = "0" ] || return 1
+    [ -n "$(find "$1" -maxdepth 0 -perm /022 2>/dev/null)" ] && return 1
+    return 0
+}
+
 if [ ! -f "$ALLOWLIST_FILE" ]; then
-    (umask 077; : > "$ALLOWLIST_FILE")
-    note "created empty allowlist at $ALLOWLIST_FILE"
+    restored_from=""
+    for candidate in $(ls -1 /root/openlitespeed_reload-allowed_resellers-*.bak 2>/dev/null | sort -r || true); do
+        if backup_is_trustworthy "$candidate"; then
+            restored_from="$candidate"
+            break
+        fi
+    done
+    if [ -n "$restored_from" ]; then
+        (umask 077; cat "$restored_from" > "$ALLOWLIST_FILE")
+        restored_count=$(grep -cE '^[a-z][a-z0-9_]{0,31}$' "$ALLOWLIST_FILE" || true)
+        note "restored $restored_count authorized reseller(s) from $restored_from"
+    else
+        (umask 077; : > "$ALLOWLIST_FILE")
+        note "created empty allowlist at $ALLOWLIST_FILE"
+    fi
 else
     note "existing allowlist preserved"
 fi

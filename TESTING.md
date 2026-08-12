@@ -6,7 +6,7 @@ Setup:
 
 ```sh
 sh installer/install.sh
-echo "resok" >> /usr/local/directadmin/plugins/openlitespeed_reload/config/allowed_resellers
+echo "resok" >> /etc/directadmin-openlitespeed-reload/allowed_resellers
 ```
 
 Shorthand used below:
@@ -61,11 +61,11 @@ curl -sk "https://SERVER:2222$PAGE" -H "Cookie: session=..." -X POST --data "act
 |---|------|-------|----------|
 | X1 | Query-string metacharacters | GET/POST PAGE with `?action=reload;reboot&x=$(id)&y=%3B%7C%26` | Rendered output escapes everything; no command other than the fixed systemctl calls runs (verify with `journalctl` and shell audit if enabled) |
 | X2 | POST metacharacters | POST `action=reload%3Breboot`, `confirm=yes%0Aid`, backticks, `|`, `&&` variants | Exact-match comparison fails; LOG `denied_invalid_action`; nothing executed |
-| X3 | Tampered allowlist perms fail closed | `chmod 666 config/allowed_resellers`, reload PAGE as `resok` | Treated as empty allowlist: denied; restore with `chmod 600` |
+| X3 | Tampered allowlist perms fail closed | `chmod 666 /etc/directadmin-openlitespeed-reload/allowed_resellers`, reload PAGE as `resok` | Treated as empty allowlist: denied; restore with `chmod 600` |
 | X4 | Concurrent requests → one reload | As `resok`, fire two confirmed POSTs simultaneously (`curl ... & curl ... &`) | One `result=success`, the other `result=locked` or `result=cooldown`; exactly one restart |
 | X5 | No secrets in logs | `grep -Ei "session|token|passwd|cookie" $LOG` after the full run | No session IDs, tokens, or passwords present |
 | X6 | No privileged output in UI | Inspect HTML of success/failure pages | No stderr, exit codes, paths beyond fixed text, or environment values |
-| X7 | Secret file tamper fails closed | `chmod 666 config/secret`, open PAGE as `resok` | Reload action reports unavailable/invalid session; no reload possible; restore 600 |
+| X7 | Secret file tamper fails closed | `chmod 666 /etc/directadmin-openlitespeed-reload/secret`, open PAGE as `resok` | Reload action reports unavailable/invalid session; no reload possible; restore 600 |
 | X8 | Old DirectAdmin behaves safely | On a DA < 1.689 box (or simulate by removing run_as lines) open PAGE | Page reports the 1.689 requirement; no privileged attempt; installer refuses without `OLS_RELOAD_FORCE=1` |
 
 ## Installer
@@ -76,7 +76,12 @@ curl -sk "https://SERVER:2222$PAGE" -H "Cookie: session=..." -X POST --data "act
 | I2 | Idempotent re-run | Run installer twice, add `resok` between runs | Second run preserves allowlist and secret; no errors |
 | I3 | Upgrade preserves config | Modify allowlist, `git pull` (or re-copy), reinstall | Allowlist and secret unchanged; code files updated |
 | I4 | Refuses wrong environment | Run on a non-OLS or old-DA box | Clear `ERROR:` naming the failed check; exit non-zero; nothing half-installed that grants privileges |
-| I5 | Uninstall clean | `sh installer/uninstall.sh` | Plugin directory and logrotate policy removed; allowlist backed up to /root; OLS and DirectAdmin untouched |
+| I5 | Uninstall clean | `sh installer/uninstall.sh` | Plugin directory and logrotate policy removed; `/etc/directadmin-openlitespeed-reload/` kept; OLS and DirectAdmin untouched |
+| I8 | Remove and re-upload keeps resellers | Add `resok`, remove the plugin in **Plugin Manager**, upload the `.tar.gz` again | `resok` is still listed on the admin page after reinstall; no re-configuration needed |
+| I9 | Migration from <=1.2.0 (in place) | On an install with `plugins/openlitespeed_reload/config/allowed_resellers` populated, install 1.3.0 over it | Installer prints `migrated allowed_resellers ...`; entries appear at the new path and remain authorized |
+| I9b | Upgrade from <=1.2.0 via Plugin Manager | With resellers configured on 1.2.0, remove the plugin in Plugin Manager, then upload the 1.3.0 `.tar.gz` | Installer prints `restored N authorized reseller(s) from /root/...bak`; the same resellers are listed on the admin page and can still reload |
+| I9c | Untrusted backup ignored | `chmod 666` the newest `/root/...bak`, remove `/etc/directadmin-openlitespeed-reload/`, re-run the installer | That backup is skipped (falls through to an older trusted one or an empty allowlist); no world-writable file is ever trusted |
+| I10 | Purge erases settings | `sh installer/uninstall.sh --purge` | `/etc/directadmin-openlitespeed-reload/` removed; a following install starts with an empty allowlist |
 | I6 | Package layout valid | `sh installer/package.sh`; `tar -tzf dist/openlitespeed_reload.tar.gz` | `plugin.conf` listed at archive root with no wrapping directory; script's own layout assertions pass |
 | I7 | Plugin Manager upload | Upload `dist/openlitespeed_reload.tar.gz` in **Admin » Plugin Manager » Add Plugin** | Plugin installs without "The following file is missing: plugin.conf"; appears in the plugin list; admin and reseller pages load |
 

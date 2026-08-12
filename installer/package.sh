@@ -32,7 +32,7 @@ tar --owner=0 --group=0 --numeric-owner --mode='u=rwx,go=rx' \
     openlitespeed_reload/reseller \
     openlitespeed_reload/admin \
     openlitespeed_reload/scripts
-gzip -f "$plain_tar"
+gzip -fn "$plain_tar"
 echo "OK: built $tarball"
 echo "    Upload this file in DirectAdmin: Admin > Plugin Manager > Add Plugin"
 

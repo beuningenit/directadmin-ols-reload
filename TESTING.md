@@ -77,6 +77,8 @@ curl -sk "https://SERVER:2222$PAGE" -H "Cookie: session=..." -X POST --data "act
 | I3 | Upgrade preserves config | Modify allowlist, `git pull` (or re-copy), reinstall | Allowlist and secret unchanged; code files updated |
 | I4 | Refuses wrong environment | Run on a non-OLS or old-DA box | Clear `ERROR:` naming the failed check; exit non-zero; nothing half-installed that grants privileges |
 | I5 | Uninstall clean | `sh installer/uninstall.sh` | Plugin directory and logrotate policy removed; allowlist backed up to /root; OLS and DirectAdmin untouched |
+| I6 | Package layout valid | `sh installer/package.sh`; `tar -tzf dist/openlitespeed_reload.tar.gz` | `plugin.conf` listed at archive root with no wrapping directory; script's own layout assertions pass |
+| I7 | Plugin Manager upload | Upload `dist/openlitespeed_reload.tar.gz` in **Admin » Plugin Manager » Add Plugin** | Plugin installs without "The following file is missing: plugin.conf"; appears in the plugin list; admin and reseller pages load |
 
 ## Audit verification
 

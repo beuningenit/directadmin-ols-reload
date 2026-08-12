@@ -81,7 +81,12 @@ Everything that must survive an upgrade lives **outside** the plugin directory:
 
 DirectAdmin deletes the whole plugin directory when a plugin is removed, so nothing that matters is kept there. Removing the plugin and uploading a newer version does **not** lose your authorized resellers.
 
-Versions up to 1.2.0 stored the allowlist and secret inside the plugin directory. Installing 1.3.0 or newer over such an install migrates both files automatically; the old copies are left in place and are simply no longer read.
+Versions up to 1.2.0 stored the allowlist and secret inside the plugin directory. Upgrading to 1.3.0 recovers your resellers automatically by either route:
+
+- **In-place upgrade** (git checkout): both files are migrated from the old `config/` directory.
+- **Plugin Manager remove-then-upload**: DirectAdmin deletes the old directory first, so instead the installer restores the most recent `/root/openlitespeed_reload-allowed_resellers-*.bak` that the previous version's uninstall script wrote — but only when there is no allowlist at the new path, and only from a root-owned, non-symlink, non-world-writable file. It reports how many resellers it restored.
+
+`--purge` removes those legacy backups too, so a deliberate erase is not undone by a later install.
 
 ## Upgrade procedure
 

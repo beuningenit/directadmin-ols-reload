@@ -43,6 +43,10 @@ fi
 if [ "$PURGE" = "1" ]; then
     rm -rf "$CONFIG_DIR"
     echo "OK: removed $CONFIG_DIR (authorized resellers and secret erased)"
+    if ls /root/openlitespeed_reload-allowed_resellers-*.bak >/dev/null 2>&1; then
+        rm -f /root/openlitespeed_reload-allowed_resellers-*.bak
+        echo "OK: removed legacy allowlist backups from /root"
+    fi
     echo "NOTE: audit log kept at $LOG_FILE"
 else
     if [ -d "$CONFIG_DIR" ]; then

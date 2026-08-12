@@ -133,13 +133,29 @@ for name in allowed_resellers secret; do
     fi
 done
 
+backup_is_trustworthy() {
+    [ -f "$1" ] || return 1
+    [ -L "$1" ] && return 1
+    [ "$(stat -c %u "$1" 2>/dev/null || echo 1)" = "0" ] || return 1
+    [ -n "$(find "$1" -maxdepth 0 -perm /022 2>/dev/null)" ] && return 1
+    return 0
+}
+
 if [ ! -f "$ALLOWLIST_FILE" ]; then
-    (umask 077; : > "$ALLOWLIST_FILE")
-    note "created empty allowlist at $ALLOWLIST_FILE"
-    recovered=$(ls -1t /root/openlitespeed_reload-allowed_resellers-*.bak 2>/dev/null | head -n 1 || true)
-    if [ -n "${recovered:-}" ]; then
-        echo "NOTE: a previous allowlist backup exists at $recovered"
-        echo "      restore it with: cp \"$recovered\" \"$ALLOWLIST_FILE\" && chmod 600 \"$ALLOWLIST_FILE\""
+    restored_from=""
+    for candidate in $(ls -1 /root/openlitespeed_reload-allowed_resellers-*.bak 2>/dev/null | sort -r || true); do
+        if backup_is_trustworthy "$candidate"; then
+            restored_from="$candidate"
+            break
+        fi
+    done
+    if [ -n "$restored_from" ]; then
+        (umask 077; cat "$restored_from" > "$ALLOWLIST_FILE")
+        restored_count=$(grep -cE '^[a-z][a-z0-9_]{0,31}$' "$ALLOWLIST_FILE" || true)
+        note "restored $restored_count authorized reseller(s) from $restored_from"
+    else
+        (umask 077; : > "$ALLOWLIST_FILE")
+        note "created empty allowlist at $ALLOWLIST_FILE"
     fi
 else
     note "existing allowlist preserved"

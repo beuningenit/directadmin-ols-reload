@@ -1,0 +1,15 @@
+[
+  {
+    "name": "OpenLiteSpeed",
+    "icon": "/CMD_PLUGINS_ADMIN/openlitespeed_reload/images/icon.svg",
+    "entries": [
+      {
+        "name": "Reload OpenLiteSpeed",
+        "icon": "/CMD_PLUGINS_ADMIN/openlitespeed_reload/images/icon.svg",
+        "href": "/CMD_PLUGINS_ADMIN/openlitespeed_reload/index.html",
+        "newTab": false,
+        "updates": 0
+      }
+    ]
+  }
+]

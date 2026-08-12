@@ -1,0 +1,172 @@
+# DirectAdmin OpenLiteSpeed Reload Plugin
+
+A deliberately narrow DirectAdmin (Evolution skin) plugin that lets explicitly allowlisted reseller accounts perform exactly one privileged operation: a graceful reload/restart of OpenLiteSpeed via `systemctl restart lsws`.
+
+Resellers get no SSH access, no sudo, no arbitrary command execution, and no other service management. The single capability is gated server-side by a root-controlled allowlist, a per-session request token, a lock, a cooldown, and audit logging.
+
+## Purpose
+
+On DirectAdmin servers running OpenLiteSpeed, some `.htaccess`-style and vhost configuration changes only take effect after a graceful OpenLiteSpeed restart. This plugin lets trusted resellers trigger that restart themselves from the DirectAdmin panel, without giving them any broader privileges.
+
+## Supported DirectAdmin versions
+
+- **DirectAdmin 1.689 or newer** with the Evolution skin. This is a hard requirement: the plugin relies on `reseller_run_as=root` in `plugin.conf`, introduced in DirectAdmin 1.689, so no setuid helper and no sudoers changes are needed.
+- On older DirectAdmin versions the installer refuses to install and the plugin page shows an incompatibility message instead of the reload action. Update DirectAdmin rather than working around this.
+
+## Requirements
+
+- DirectAdmin 1.689+ (Evolution skin)
+- OpenLiteSpeed installed as the web server, with a systemd `lsws` service (`/usr/local/lsws/bin/openlitespeed` present)
+- systemd (`systemctl` at `/usr/bin/systemctl` or `/bin/systemctl`)
+- PHP CLI 7.4+ at `/usr/local/bin/php` (standard on CustomBuild servers)
+
+This plugin is only for existing OpenLiteSpeed servers. It does not install OpenLiteSpeed and does not support Apache, nginx, or LiteSpeed Enterprise.
+
+## Installation
+
+As root on the server:
+
+```sh
+cd /root
+git clone https://github.com/<you>/directadmin-ols-reload.git
+cd directadmin-ols-reload
+sh installer/install.sh
+```
+
+The installer:
+
+1. Copies the plugin to `/usr/local/directadmin/plugins/openlitespeed_reload/` (preserving any existing config)
+2. Validates DirectAdmin >= 1.689, systemd, the `lsws` unit, the OpenLiteSpeed binary, and PHP >= 7.4
+3. Sets root ownership, executable bits, and restrictive permissions on config and log files
+4. Creates an empty allowlist at `config/allowed_resellers` if none exists (empty allowlist = nobody authorized)
+5. Generates a root-only request-validation secret
+6. Creates `/var/log/directadmin-openlitespeed-reload.log` (0600 root) and a logrotate policy
+7. Marks the plugin active and installed
+
+The installer is idempotent; re-running it never overwrites the allowlist, the secret, or the log.
+
+To bypass the environment checks on a lab machine (not recommended in production):
+
+```sh
+OLS_RELOAD_FORCE=1 sh installer/install.sh
+```
+
+Alternatively, build a Plugin Manager package with `sh installer/package.sh` and upload `dist/openlitespeed_reload-<version>.tar.gz` through **Admin » Plugin Manager**; DirectAdmin then runs `scripts/install.sh` itself.
+
+If the menu entry does not appear immediately, reload the Evolution interface (log out and back in).
+
+## Upgrade procedure
+
+```sh
+cd /root/directadmin-ols-reload
+git pull
+sh installer/install.sh
+```
+
+Ordinary upgrades replace the plugin code but preserve `config/allowed_resellers`, `config/secret`, and the audit log.
+
+## Uninstallation
+
+```sh
+sh installer/uninstall.sh
+```
+
+This backs up a non-empty allowlist to `/root/openlitespeed_reload-allowed_resellers-<timestamp>.bak`, removes the logrotate policy and the plugin directory, and leaves OpenLiteSpeed, DirectAdmin configuration, and the audit log untouched. Remove `/var/log/directadmin-openlitespeed-reload.log` manually if you no longer want it.
+
+Uninstalling through **Admin » Plugin Manager** works too; DirectAdmin runs `scripts/uninstall.sh` before deleting the directory.
+
+## Adding a reseller to the allowlist
+
+As root, add the DirectAdmin reseller username on its own line:
+
+```sh
+echo "resellername" >> /usr/local/directadmin/plugins/openlitespeed_reload/config/allowed_resellers
+```
+
+Rules:
+
+- One exact username per line; no wildcards
+- Empty lines and lines starting with `#` are ignored
+- Malformed usernames (anything not matching `^[a-z][a-z0-9_]{0,31}$`) are ignored
+- An empty file means nobody is authorized
+- The file must stay owned by root and not group/world writable; if its permissions are loosened, the plugin treats the allowlist as empty and denies everyone
+
+Changes take effect on the next request; no restart is needed.
+
+## Removing a reseller from the allowlist
+
+Edit the file as root and delete the line:
+
+```sh
+vi /usr/local/directadmin/plugins/openlitespeed_reload/config/allowed_resellers
+```
+
+## Usage
+
+An allowlisted reseller logs into DirectAdmin Evolution and opens **Reload OpenLiteSpeed** from the menu (or `/CMD_PLUGINS_RESELLER/openlitespeed_reload/index.html`). The page shows the current service status (Running / Stopped / Not installed / Unknown) and a **Reload OpenLiteSpeed** button. Submitting it shows an explicit confirmation step warning that the operation affects all websites on the server. After confirmation the server performs one `systemctl restart lsws`, verifies the service is active again, and reports success or a sanitized failure message.
+
+Admins have an equivalent page at **Admin » Reload OpenLiteSpeed** (`/CMD_PLUGINS_ADMIN/openlitespeed_reload/index.html`) that also shows the current allowlist and the most recent audit entries.
+
+## Login-as behavior
+
+Authorization is always evaluated against the **effective account** of the session, never the master identity behind a `login-as`:
+
+- If an admin uses login-as into an allowlisted reseller, the action is permitted and the audit log records both identities (`user=reseller master=admin`).
+- If an admin uses login-as into a reseller that is **not** allowlisted, the action is denied; being admin at the master level grants nothing on the reseller page. Admins who want to reload should use the admin page under their own identity.
+- Privilege never flows from the impersonated account back to an unauthorized master, because the allowlist and usertype checks apply to the effective account only, immediately before execution.
+
+Identities of the form `master|user` in DirectAdmin's `USERNAME` value are parsed accordingly, and both parts must match the strict username pattern or the request is rejected.
+
+## Security model
+
+- **Single fixed operation.** The only privileged commands the plugin can run are `systemctl restart lsws.service`, `systemctl is-active lsws.service`, and `systemctl show lsws.service --property=LoadState --value`, always with a fixed argument array, an absolute `systemctl` path, a minimal environment, and no shell. No request value is ever part of a command.
+- **Root execution via DirectAdmin.** Privileged execution uses `reseller_run_as=root` / `admin_run_as=root` (DirectAdmin 1.689+). There is no setuid helper, no sudoers entry, and no generic privileged helper. If the script is not running as root (older DirectAdmin), it renders an incompatibility notice and never attempts privileged work.
+- **Server-side authorization on every request.** Before any action: the effective account must exist, not be suspended, and have `usertype=reseller` (allowlisted) or `usertype=admin`; hiding the menu is cosmetic only. Forged URLs or POSTs from other accounts are denied and logged.
+- **Allowlist integrity.** The allowlist is only trusted when owned by root and not group/world writable; otherwise it is treated as empty (fail closed).
+- **POST-only with confirmation.** GET never triggers a reload; the action is only read from the POST body, must exactly equal `reload`, and requires `confirm=yes` from the server-rendered confirmation step.
+- **CSRF.** DirectAdmin's own session and referer checking protect plugin requests; in addition every state-changing POST must carry an HMAC token bound to the DirectAdmin session ID and effective username, derived from a root-only secret generated at install time. Tokens are compared with constant-time comparison. The session ID itself is never logged or echoed.
+- **Concurrency and rate limiting.** An exclusive `flock` on `/run/directadmin-openlitespeed-reload/reload.lock` guarantees at most one restart at a time, and a 10-second server-side cooldown absorbs repeated clicks and browser retries. The lock lives in a root-owned 0700 directory under `/run` (not the world-writable `/run/lock`) and the plugin verifies ownership and refuses symlinks before using it. The UI also disables the button after submission, but only the server-side lock is relied upon.
+- **Sanitized output.** Resellers only ever see fixed status strings and fixed result messages. Command stderr, exit codes, environment values, and file contents never reach the reseller UI; failure detail goes to the root-only audit log (control characters stripped, truncated).
+- **Audit logging.** Every privileged attempt (allowed or denied) is appended to `/var/log/directadmin-openlitespeed-reload.log` (0600 root) with timestamp, effective user, login-as master, request IP when DirectAdmin provides one, authorization outcome, whether a reload was attempted, and the result. No passwords, session IDs, cookies, or secrets are logged. If the log file cannot be written, entries fall back to syslog.
+
+## Testing
+
+See [TESTING.md](TESTING.md) for the full test plan covering authorization, HTTP behavior, service handling, concurrency, and injection resistance.
+
+Quick smoke test after installation:
+
+1. `systemctl is-active lsws` shows `active`.
+2. Add a test reseller to the allowlist and open the plugin page as that reseller: status shows **Running**.
+3. Click **Reload OpenLiteSpeed**, confirm, and verify the success message.
+4. `tail /var/log/directadmin-openlitespeed-reload.log` shows the audit entry.
+5. Open the page as a second, non-allowlisted reseller: the page reports not authorized, and a denied entry is logged.
+
+## Troubleshooting
+
+- **Page says the plugin requires DirectAdmin 1.689+.** The script is not running as root, which means DirectAdmin is too old to honor `reseller_run_as=root` (or the plugin.conf was altered). Update DirectAdmin and reinstall.
+- **No menu entry for a reseller.** The reseller menu is intentionally hidden for accounts that are not allowlisted. Verify the username is in `config/allowed_resellers` (exact, lowercase, one per line) and that the file is root-owned with mode 600. Then reload the Evolution UI.
+- **"The request could not be validated" on reload.** The session token expired or `config/secret` is missing or has unsafe permissions. Reopen the page from the panel; if it persists, re-run the installer and check `ls -l config/secret` (must be root, 0600).
+- **Reload fails.** Check the audit log for the `detail="exit=... stderr=..."` entry, then `journalctl -u lsws` as root. The reseller UI intentionally shows no diagnostic output.
+- **Status shows Not installed.** The `lsws` systemd unit is missing. This plugin only manages an existing OpenLiteSpeed installation.
+- **Nothing is being logged to the file.** If the log file is unwritable the plugin logs to syslog (`journalctl -t openlitespeed_reload`). Re-run the installer to fix ownership.
+
+## Repository layout
+
+```text
+README.md
+TESTING.md
+plugin/            files installed to /usr/local/directadmin/plugins/openlitespeed_reload/
+  plugin.conf
+  admin/index.html
+  reseller/index.html
+  reseller/menu.json.raw
+  lib/common.php
+  images/
+  config/allowed_resellers.example
+  scripts/install.sh
+  scripts/uninstall.sh
+installer/
+  install.sh       standalone root installer (recommended)
+  uninstall.sh
+  package.sh       builds a Plugin Manager tar.gz into dist/
+```

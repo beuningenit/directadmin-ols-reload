@@ -1,0 +1,30 @@
+#!/usr/local/bin/php
+<?php
+
+if (PHP_VERSION_ID < 70400) {
+    echo "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]";
+    exit;
+}
+
+require __DIR__ . '/../lib/common.php';
+
+$menu = [];
+$identity = ols_identity();
+if ($identity !== null && ols_running_as_root() && ols_reseller_authorized($identity)) {
+    $icon = '/CMD_PLUGINS_RESELLER/openlitespeed_reload/images/icon.svg';
+    $menu[] = [
+        'name' => 'OpenLiteSpeed',
+        'icon' => $icon,
+        'entries' => [
+            [
+                'name' => 'Reload OpenLiteSpeed',
+                'icon' => $icon,
+                'href' => OLS_RESELLER_URL,
+                'newTab' => false,
+                'updates' => 0,
+            ],
+        ],
+    ];
+}
+$body = (string)json_encode($menu);
+echo "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " . strlen($body) . "\r\n\r\n" . $body;
